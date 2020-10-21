@@ -239,6 +239,8 @@ PsychError PsychModuleInit(void)
     PsychErrorExit(PsychRegister("BlendFunction", &SCREENBlendFunction));
     PsychErrorExit(PsychRegister("WindowSize", &SCREENWindowSize));
     PsychErrorExit(PsychRegister("GetMouseHelper", &SCREENGetMouseHelper));
+    PsychErrorExit(PsychRegister("GetMouseTransientHelper", &SCREENGetMouseTransientHelper));
+    PsychErrorExit(PsychRegister("GetTouchHelper", &SCREENGetTouchHelper));
     PsychErrorExit(PsychRegister("TextBackgroundColor", &SCREENTextBackgroundColor));
     PsychErrorExit(PsychRegister("LineStipple", &SCREENLineStipple));
     PsychErrorExit(PsychRegister("SelectStereoDrawBuffer", &SCREENSelectStereoDrawBuffer));

@@ -32,7 +32,7 @@
 #define PSYCHTOOLBOX_MINOR_VERSION              0
 #define PSYCHTOOLBOX_POINT_VERSION              16
 //If you fork my source please change this name.  - awi
-#define PSYCHTOOLBOX_PROJECT_NAME               "OpenGL Psychtoolbox"
+#define PSYCHTOOLBOX_PROJECT_NAME               "OpenGL Psychtoolbox ICM-PRISME"
 #if PSYCH_SYSTEM == PSYCH_OSX
 //Placeholder for the OS X version at build time.
 #define PSYCHTOOLBOX_OS_NAME                    "Apple OS X"

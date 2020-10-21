@@ -8,6 +8,7 @@
     AUTHORS:
 
         Mario Kleiner   mk      mario.kleiner.de@gmail.com
+        Gilles Rautureau  gr           gilles.rautureau@icm-institute.org
 
     DESCRIPTION:
 
@@ -36,6 +37,8 @@ void    PsychOSUnsetGLContext(PsychWindowRecordType *windowRecord);
 void    PsychOSSetUserGLContext(PsychWindowRecordType *windowRecord, psych_bool copyfromPTBContext);
 double  PsychOSGetVBLTimeAndCount(PsychWindowRecordType *windowRecord, psych_uint64* vblCount);
 void    PsychGetMouseButtonState(double* buttonArray);
+void    PsychGetMouseButtonTransient(double* buttonArray);
+void	PsychGetTouchState(int* xTouch, int* yTouch, bool* ScreenTouchState, int* nbTouch);
 psych_bool PsychOSGetPresentationTimingInfo(PsychWindowRecordType *windowRecord, psych_bool postSwap, unsigned int flags, psych_uint64* onsetVBLCount, double* onsetVBLTime, psych_uint64* frameId, double* compositionRate, int fullStateStructReturnArgPos);
 psych_bool PsychOSSetPresentParameters(PsychWindowRecordType *windowRecord, psych_uint64 targetVBL, unsigned int queueLength, double rateDuration);
 int     PsychOSIsDWMEnabled(int screenNumber);

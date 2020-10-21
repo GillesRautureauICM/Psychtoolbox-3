@@ -241,6 +241,8 @@ PsychError SCREENTransformTexture(void);
 PsychError SCREENDrawTextures(void) ;
 PsychError SCREENGetWindowInfo(void);
 PsychError SCREENGetMouseHelper(void);
+PsychError SCREENGetMouseTransientHelper(void);
+PsychError SCREENGetTouchHelper(void);
 PsychError SCREENResolution(void);
 PsychError SCREENResolutions(void);
 PsychError SCREENWaitUntilAsyncFlipCertain(void);

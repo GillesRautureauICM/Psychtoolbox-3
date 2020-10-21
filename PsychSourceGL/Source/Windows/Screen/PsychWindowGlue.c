@@ -9,6 +9,7 @@
  *
  *        Allen Ingling  awi             Allen.Ingling@nyu.edu
  *        Mario Kleiner  mk              mario.kleiner.de@gmail.com
+ *        Gilles Rautureau  gr           gilles.rautureau@icm-institute.org
  *
  *    HISTORY:
  *
@@ -27,6 +28,7 @@
  *        9/30/05         mk         Added check for Screen('Preference', 'VisualDebugLevel', level) -> Amount of vis. feedback.
  *        10/10/05        mk         Important Bugfix for PsychRealtimePriority() - didn't switch back to non-RT priority!!
  *        10/19/05        awi        Cast NULL to CGLPixelFormatAttribute type to make the compiler happy.
+ *        10/06/17        gr         Add transient clicks and touchscreen support (windows OS)
  *
  *    DESCRIPTION:
  *
@@ -274,6 +276,17 @@ static psych_bool mousebutton_l=FALSE;
 static psych_bool mousebutton_m=FALSE;
 static psych_bool mousebutton_r=FALSE;
 
+// Mouse button clic number (for transient):
+static unsigned int mousebuttonClicNumber_l=0;
+static unsigned int mousebuttonClicNumber_m=0;
+static unsigned int mousebuttonClicNumber_r=0;
+
+//Touch state
+static int touchPositionX = 0;
+static int touchPositionY = 0;
+static bool touchState = false;
+static int touchNb = 0;
+
 // Module handle for the DWM library 'dwmapi.dll': Or 0 if unsupported.
 HMODULE dwmlibrary = 0;
 
@@ -486,6 +499,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             case WM_LBUTTONDOWN:
                 // Left mouse button depressed:
                 mousebutton_l = TRUE;
+                mousebuttonClicNumber_l++; //increase counter
                 break;
 
             case WM_LBUTTONUP:
@@ -496,6 +510,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             case WM_MBUTTONDOWN:
                 // Middle mouse button depressed:
                 mousebutton_m = TRUE;
+                mousebuttonClicNumber_m++; //increase counter
                 break;
 
             case WM_MBUTTONUP:
@@ -506,13 +521,61 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             case WM_RBUTTONDOWN:
                 // Right mouse button depressed:
                 mousebutton_r = TRUE;
+                mousebuttonClicNumber_r++; //increase counter
                 break;
 
             case WM_RBUTTONUP:
                 // Right mouse button released:
                 mousebutton_r = FALSE;
                 break;
-
+                
+            case WM_TOUCH: // Part of this code is from Microsoft Touch Samples
+            {
+                // WM_TOUCH message can contain several messages from different contacts
+                // packed together.
+                // Message parameters need to be decoded:
+                unsigned int numInputs = (unsigned int) wParam; // Number of actual per-contact messages
+                TOUCHINPUT* ti = malloc(numInputs * sizeof(TOUCHINPUT));
+                if (ti == NULL)
+                {
+                    break;
+                }
+                // Unpack message parameters into the array of TOUCHINPUT structures, each
+                // representing a message for one single contact.
+                if (GetTouchInputInfo((HTOUCHINPUT)lParam, numInputs, ti, sizeof(TOUCHINPUT)))
+                {
+                    unsigned int i;
+                    
+                    for (i = 0; i < numInputs; ++i)
+                    {
+                        if (ti[i].dwFlags & TOUCHEVENTF_DOWN)
+                        {
+                            if (verbosity > 6) printf("PTB-DEBUG: TOUCHEVENTF_DOWN\n");
+							touchState = true;
+							touchPositionX = ti->x / 100;
+							touchPositionY = ti->y / 100;
+                            touchNb++; //increase counter
+                        }
+                        else if (ti[i].dwFlags & TOUCHEVENTF_MOVE)
+                        {
+                            if (verbosity > 6) printf("PTB-DEBUG: TOUCHEVENTF_MOVE\n");
+							touchPositionX = ti->x / 100;
+							touchPositionY = ti->y / 100;
+                        }
+                        else if (ti[i].dwFlags & TOUCHEVENTF_UP)
+                        {
+                            if (verbosity > 6) printf("PTB-DEBUG: TOUCHEVENTF_UP\n");
+							touchState = false;
+							touchPositionX = ti->x / 100;
+							touchPositionY = ti->y / 100;
+                        }
+                    }
+                }
+                CloseTouchInputHandle((HTOUCHINPUT)lParam);
+                free(ti);
+            }
+            break;
+            
             case WM_PAINT:
                 // Repaint event: This happens if a previously covered non-fullscreen window
                 // got uncovered, so part of it needs to be redrawn. PTB's rendering model
@@ -611,6 +674,30 @@ void PsychGetMouseButtonState(double* buttonArray)
     }
 
     return;
+}
+
+/* PsychGetMouseButtonTransient: Return number of mouse button clic since last call. Called by SCREENGetMouseTransientHelper. */
+void PsychGetMouseButtonTransient(double* buttonArray)
+{
+    if (NULL != buttonArray) {
+        buttonArray[0] = (double) mousebuttonClicNumber_l;
+        buttonArray[1] = (double) mousebuttonClicNumber_m;
+        buttonArray[2] = (double) mousebuttonClicNumber_r;
+    }
+    //reset counters
+    mousebuttonClicNumber_l = 0;
+    mousebuttonClicNumber_m = 0;
+    mousebuttonClicNumber_r = 0;
+}
+
+/*PsychGetTouchState: Return touch position, touch state and nb of touch since last call. Called by SCREENGetTouchHelper*/
+void PsychGetTouchState(int* xTouch, int* yTouch, bool* ScreenTouchState, int* nbTouch)
+{
+    *xTouch = touchPositionX;
+    *yTouch = touchPositionY;
+    *ScreenTouchState = touchState;
+    *nbTouch = touchNb;
+    touchNb = 0; // reset counter
 }
 
 psych_bool ChangeScreenResolution (int screenNumber, int width, int height, int bitsPerPixel, int fps)    // Change The Screen Resolution
@@ -1143,6 +1230,10 @@ dwmdontcare:
         printf("\nPTB-ERROR[CreateWindow() failed]: Unknown error, Win32 specific.\n\n");
         return(FALSE);
     }
+    
+    if (RegisterTouchWindow(hWnd, 0) == NULL) {
+		printf("\nPTB-ERROR[RegisterTouchWindow() failed] \n\n");
+	}
 
     if (PsychPrefStateGet_Verbosity() > 4) {
         if (x != CW_USEDEFAULT) {

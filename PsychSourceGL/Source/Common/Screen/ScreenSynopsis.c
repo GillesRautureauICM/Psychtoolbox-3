@@ -5,6 +5,7 @@
 
         Allen.Ingling@nyu.edu               awi
         mario.kleiner at tuebingen.mpg.de   mk
+        gilles.rautureau@icm-institute.org  gr
 
     PLATFORMS:
 
@@ -23,6 +24,7 @@
                 5/30/05         mk              Added synopsis for "SkipSyncTests" - preference setting.
                 7/23/05         mk              Added synopsis for new arguments filterMode and globalAlpha of "DrawTexture"
                 9/30/05         mk              Added synopsis for "VisualDebugLevel" - preference setting.
+                10/11/17        gr              Added synopsis for "GetTouchHelper" and "GetMouseTransientHelper"
 
         DESCRIPTION:
 
@@ -191,6 +193,10 @@ const char** InitializeSynopsis(void)
     synopsis[i++] = "Screen('ShowCursorHelper', windowPntr [, cursorshapeid][, mouseIndex]);";
     synopsis[i++] = "Screen('SetMouseHelper', windowPntrOrScreenNumber, x, y [, mouseIndex][, detachFromMouse]);";
     synopsis[i++] = "Screen('SetMouseHelper', windowPntrOrScreenNumber, x, y [, mouseIndex][, detachFromMouse]);";
+    synopsis[i++] = "[buttonValueArray] = Screen('GetMouseTransientHelper', numButtons );";
+    
+    synopsis[i++] = "\n% Touch Helper function.  Don't call this directly, use GetMouseTransient with mousedev=1 :";
+    synopsis[i++] = "[x, y, touchState, nbTouch]= Screen('GetTouchHelper');";
 
     // Internal testing of Screen
     synopsis[i++] = "\n% Internal testing of Screen";
