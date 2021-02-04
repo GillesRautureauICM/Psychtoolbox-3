@@ -55,11 +55,14 @@
 %    FontDemo                - How to check for font availability and set font.
 %    GarboriumDemo           - Demonstrate superimposed drawing of many Gabors by use of alpha-
 %                              blending, 'DrawTextures' batch drawing and PTB imaging pipeline.
-%    GazeContingentDemo      - Implementation of a simple gaze contingent display 
+%    GazeContingentDemo      - Implementation of a simple gaze contingent display
 %    GLSLCLUTAnimDemo        - Demonstrates use of function moglClutBlit to
 %                              perform CLUT animation with GLSL in an OS independent way.
 %    GPGPUDemos              - Demos for use of GPGPU computing with Psychtoolbox.
 %    GratingDemo             - Basic display of a grating on the screen.
+%    HDRMinimalisticOpenGLDemo - Basic demo on how to render OpenGL 3D stimuli on a HDR display.
+%    HDRViewer               - A simple image viewer for displaying HDR images on a HDR display.
+%    ImagingStereoMoviePlayer - Minimalistic movie player for stereo movies, also HDR and VR capable.
 %    IsomerizationsInDishDemo - Compute photoreceptor isomerizations for retina in a dish.
 %    IsomerizationsInEyeDemo  - Compute photoreceptor isomerizations for human eye.
 %    KbDemo                  - Demonstrate KbCheck, KbName, KbWait.
@@ -80,6 +83,7 @@
 %    MultiTouchMinimalDemo   - Shows a more minimal example of how to get (multi-)touch input from touchscreens and touchpads.
 %    NomogramDemo            - Compute photoreceptor nomograms.
 %    OldNewRecogExp          - A full old-new recognition experiment.
+%    OpenEXRImages           - Subfolder: OpenEXR HDR sample image files.
 %    OpenGL4MatlabDemos      - Subfolder: Demos on how to use MOGL OpenGL functions.
 %    PanelFitterDemo         - Demonstrate use of the builtin panel fitter.
 %    ProceduralColorGratingDemo - Demo for fast drawing of color gratings.
@@ -95,6 +99,8 @@
 %    ReceivingTriggerFromSerialPortDemo - Template for asynchronous trigger collection and timestamping from serial port.
 %    RenderDemo              - Render CIE xyY as a color patch.
 %    SadowskiDemo            - Shows the "Sadowski" color afterimage effect.
+%    SimpleHDRDemo           - Minimal demo for using a HDR display, showing some basic stimuli.
+%    SimpleHDRLinuxStereoDemo -Like SimpleHDRDemo, but with Linux/X11 stereo hack for stereoscopic HDR stimulation.
 %    SimpleImageMixingDemo   - Shows how to mix two images via alpha-blending, using an alpha-mask which itself is morphed between two masks.
 %                              See also ImageMixingTutorial for a more complex demonstration of the technique.
 %    SimpleSoundScheduleDemo - Simple demo for basic use of sound schedules with PsychPortAudio.

@@ -61,6 +61,16 @@ try
     fprintf('Uses the xf86-video-modesetting DDX video driver.\n');
   end
 
+  % RaspberryPi VideoCore4/6?
+  if strcmp(winfo.GPUCoreId, 'VC4')
+    % Raspbian in early 2021 has a bug which prevents pageflipping from working.
+    % Add a workaround to the xorg.conf settings, which will fix it:
+    fprintf('This is likely a RaspberryPi with VideoCore-4 or VideoCore-6 gpu.\n');
+    needPreventDrmModifiers = 1;
+  else
+    needPreventDrmModifiers = 0;
+  end
+
   % Step 2: Enumerate all available video outputs on all X-Screens:
   outputs = [];
   outputCnt = 0;
@@ -294,6 +304,7 @@ try
       fprintf('outputs. It also causes substantial reduction in graphics performance, and only works with\n');
       fprintf('some desktop GUI environments, e.g., GNOME-3. This function is highly experimental and may\n');
       fprintf('not work at all on your setup, so use a photometer to verify actual precision carefully!\n');
+      fprintf('This also works with later gpus up to and including AMD Vega, but does not need setup here.\n');
       fprintf('Answer no here if a 10 bpc / 30 bpp framebuffer is sufficient for your needs.\n');
       atinotiling = '';
       while isempty(atinotiling) || ~ismember(atinotiling, ['y', 'n', 'd'])
@@ -311,7 +322,7 @@ try
         strcmp(xdriver, 'ati') || ((xversion(1) > 1 || (xversion(1) == 1 && xversion(2) >= 20)) && (strcmp(xdriver, 'modesetting') || strcmp(xdriver, 'amdgpu'))))
       fprintf('\n\nDo you want to setup a 30 bit framebuffer for 10 bpc precision per color channel?\n');
       if strcmp(xdriver, 'intel') || strcmp(xdriver, 'nouveau') || strcmp(xdriver, 'ati') || strcmp(xdriver, 'modesetting') || strcmp(xdriver, 'amdgpu')
-        fprintf('This will need the very latest drivers, so a year 2018 or later Linux distribution, e.g., at least Ubuntu 18.04 LTS,\n');
+        fprintf('This will need a year 2018 or later Linux distribution, e.g., at least Ubuntu 18.04 LTS,\n');
         fprintf('with Mesa 18.0 or later for Intel and AMD gpus, and Mesa 18.1 or later for NVidia gpus.\n');
       end
 
@@ -320,9 +331,11 @@ try
       end
 
       fprintf('If your desktop GUI fails to work, or Psychtoolbox gives lots of timing or page-flip related warnings,\n');
-      fprintf('then you know your system and hardware is not ready yet for this depth 30 mode. On AMD hardware from 2007 or later\n');
-      fprintf('depth 30 will always work even without the need to set it up here, at least for PsychImaging native 10 bit\n');
-      fprintf('framebuffer tasks, albeit at potentially slightly lower performance. AMD gpus have special support in PTB in this sense.\n');
+      fprintf('then you know your system and hardware is not ready yet for this depth 30 mode. On AMD hardware sold\n');
+      fprintf('from 2007 to ~2019, up to and including AMD Vega, but *not* anymore for AMD Navi RX 5000 or AMD Ryzen\n');
+      fprintf('processor integrated graphics or later models, depth 30 will always work even without the need to set\n');
+      fprintf('it up here, at least for PsychImaging native 10 bit framebuffer tasks, albeit at potentially slightly\n');
+      fprintf('lower performance. These slightly older AMD gpus have special support by PTB in this sense.\n');
       fprintf('Also note that not all gpus can output true 10 bpc on all types of video outputs. Check carefully with a photometer etc.!\n');
 
       depth30bpp = '';
@@ -514,7 +527,8 @@ end
 
 % Actually any xorg.conf for non-standard settings needed?
 if noautoaddgpu == 0 && multixscreen == 0 && dri3 == 'd' && ismember(useuxa, ['d', 'n']) && triplebuffer == 'd' && modesetting == 'd' && ...
-   ~isempty(intersect(depth30bpp, 'nd')) && ismember(atinotiling, ['d', 'n']) && ~strcmp(xdriver, 'nvidia') && vrrsupport == 'd'
+   ~isempty(intersect(depth30bpp, 'nd')) && ismember(atinotiling, ['d', 'n']) && ~strcmp(xdriver, 'nvidia') && vrrsupport == 'd' && ...
+   needPreventDrmModifiers == 0
 
   % All settings are for a single X-Screen setup with auto-detected outputs
   % and all driver settings on default and not on a NVidia proprietary driver.
@@ -595,9 +609,19 @@ end
 % Header:
 fprintf(fid, '# Auto generated xorg.conf - Created by Psychtoolbox XOrgConfCreator.\n\n');
 
-if noautoaddgpu > 0
+if noautoaddgpu > 0 || needPreventDrmModifiers
   fprintf(fid, 'Section "ServerFlags"\n');
-  fprintf(fid, '  Option "AutoAddGPU"     "false"\n');
+  if noautoaddgpu
+    fprintf(fid, '  Option "AutoAddGPU"     "false"\n');
+  end
+
+  if needPreventDrmModifiers
+    % Explicitely prevent use of dmabuf_capable flag for modesetting-ddx, as that
+    % can cause broken pageflipping on Raspbian with Linux 5.3 and later.
+    % See: https://gitlab.freedesktop.org/mesa/mesa/-/issues/3601
+    fprintf(fid, '  Option "Debug"     "None"\n');
+  end
+
   fprintf(fid, 'EndSection\n\n');
 end
 

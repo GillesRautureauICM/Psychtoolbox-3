@@ -252,6 +252,7 @@ PsychError SCREENAddAudioBufferToMovie(void);
 PsychError SCREENGetFlipInfo(void);
 PsychError SCREENConfigureDisplay(void);
 PsychError SCREENPanelFitter(void);
+PsychError SCREENReadHDRImage(void);
 //PsychError SCREENSetGLSynchronous(void);        //SCREENSetGLSynchronous.c
 
 //end include once

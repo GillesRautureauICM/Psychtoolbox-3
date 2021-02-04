@@ -105,6 +105,8 @@ unsigned int      bytes_per_pixel; /* 3:RGB, 4:RGBA */
 unsigned char*    pixel_data;
 } splash_image;
 
+static PsychWindowRecordType *splashTextureRecord = NULL;
+
 /* Flag which defines if userspace rendering is active: */
 static psych_bool inGLUserspace = FALSE;
 
@@ -139,8 +141,17 @@ unsigned int PsychGetNrVRRSchedulerWindowsActive(void)
     return(vrrSchedulersActive);
 }
 
-// Internal helper: Measure and compute VBLANK start and end timestamp for current refresh cycle:
-static double PsychGetVblankTimestamps(PsychWindowRecordType *windowRecord, double *vblankStart)
+/*
+ * Measure and compute VBLANK start and end timestamp for current refresh cycle.
+ *
+ * This uses the beamposition based timestamping to compute vblank start and end
+ * time for the most recent (or still active) vblank.
+ *
+ * Returns -1 on failure / if the feature is unsupported.
+ * Returns start of active scanout (= End time of vblank). If optional vblStartTime
+ * is provided, then returns start time of vblank in the double pointed to by vblStartTime.
+ */
+double PsychGetVblankTimestamps(PsychWindowRecordType *windowRecord, double *vblankStartTime)
 {
     int beamPosAtFlip;
     double vbl_lines_elapsed, onset_lines_togo;
@@ -150,11 +161,15 @@ static double PsychGetVblankTimestamps(PsychWindowRecordType *windowRecord, doub
     double vbl_endline = windowRecord->VBL_Endline;
 
     // Beamposition queries inoperative/unsupported/broken/disabled?
-    if (vbl_endline == -1)
+    if (vbl_endline == -1 || currentrefreshestimate <= 0.0)
         return(-1);
 
     beamPosAtFlip = PsychGetDisplayBeamPosition((CGDirectDisplayID) NULL, windowRecord->screenNumber);
     PsychGetAdjustedPrecisionTimerSeconds(&time_at_vbl);
+
+    // Failed / Unsupported?
+    if (beamPosAtFlip == -1)
+        return(-1);
 
     if (beamPosAtFlip >= vbl_startline) {
         vbl_lines_elapsed = beamPosAtFlip - vbl_startline;
@@ -170,8 +185,8 @@ static double PsychGetVblankTimestamps(PsychWindowRecordType *windowRecord, doub
     onset_time_togo = onset_lines_togo / vbl_endline * currentrefreshestimate;
 
     // Compute start of vblank -- Only works in non-VRR mode with fixed duration Vblank:
-    if (vblankStart)
-        *vblankStart = time_at_vbl - vbl_time_elapsed;
+    if (vblankStartTime)
+        *vblankStartTime = time_at_vbl - vbl_time_elapsed;
 
     // Compute of stimulus-onset, aka time when retrace is finished:
     time_at_vbl = time_at_vbl + onset_time_togo;
@@ -182,41 +197,12 @@ static double PsychGetVblankTimestamps(PsychWindowRecordType *windowRecord, doub
 
 static void PsychDrawSplash(PsychWindowRecordType* windowRecord)
 {
-    int logo_x, logo_y;
-    int visual_debuglevel = PsychPrefStateGet_VisualDebugLevel();
-
-    // Use alternate texture-mapping based splash drawing on OSX, on the hunch that Apple
-    // might have screwed up their glDrawPixels() implementation so badly on some gpu's that
-    // it causes lots of sync failures, especially on modern iMac's. Unclear if this is the
-    // case, but let's see what user testing will show:
-    if (PSYCH_SYSTEM == PSYCH_OSX)
-        return;
-
-    // See call below for explanation: This workaround is also needed on VideoCore-4 + DRI3/Present, so maybe the assumption
-    // that this is an intel-ddx sna bug is wrong, and it is actually a Mesa DRI3/Present bug in drawable invalidation/revalidation?
-    if (strstr(windowRecord->gpuCoreId, "Intel") || strstr(windowRecord->gpuCoreId, "VC4")) {
-        PsychWaitPixelSyncToken(windowRecord, TRUE);
-    }
-
-    // Skip this function on OpenGL-ES or on BroadCom VideoCore-4 gpu, as it is
-    // either unsupported, or too slow:
-    if (!PsychIsGLClassic(windowRecord) || strstr(windowRecord->gpuCoreId, "VC4"))
-        return;
-
-    // Compute logo_x and logo_y x,y offset for drawing the startup logo:
-    logo_x = ((int) PsychGetWidthFromRect(windowRecord->rect) - (int) splash_image.width) / 2;
-    logo_x = (logo_x > 0) ? logo_x : 0;
-    logo_y = ((int) PsychGetHeightFromRect(windowRecord->rect) - (int) splash_image.height) / 2;
-    logo_y = (logo_y > 0) ? logo_y : 0;
-
+    // Always clear framebuffer to defined background color:
     glClear(GL_COLOR_BUFFER_BIT);
 
-    if ((visual_debuglevel >= 4) && (splash_image.bytes_per_pixel > 0)) {
-        glPixelZoom(1, -1);
-        glRasterPos2i(logo_x, logo_y);
-        glDrawPixels(splash_image.width, splash_image.height, splash_image.bytes_per_pixel, GL_UNSIGNED_BYTE, (void*) &splash_image.pixel_data[0]);
-        glPixelZoom(1, 1);
-    }
+    // Draw splash image texture at visual level 4+:
+    if ((PsychPrefStateGet_VisualDebugLevel() >= 4) && splashTextureRecord && (PsychGetParentWindow(splashTextureRecord) == windowRecord))
+        PsychBlitTextureToDisplay(splashTextureRecord, windowRecord, splashTextureRecord->rect, splashTextureRecord->clientrect, 0, 1, 1);
 
     return;
 }
@@ -381,6 +367,8 @@ psych_bool PsychOpenOnscreenWindow(PsychScreenSettingsType *screenSettings, Psyc
             printf("PTB-INFO: Type 'PsychtoolboxVersion' for more detailed version information.\n");
             printf("PTB-INFO: Most parts of the Psychtoolbox distribution are licensed to you under terms of the MIT License, with\n");
             printf("PTB-INFO: some restrictions. See file 'License.txt' in the Psychtoolbox root folder for the exact licensing conditions.\n\n");
+            printf("PTB-INFO: For information about paid priority support, community membership and commercial services, please type\n");
+            printf("PTB-INFO: 'PsychPaidSupportAndServices'.\n\n");
         }
 
         if (PsychPrefStateGet_EmulateOldPTB() && PsychPrefStateGet_Verbosity()>1) {
@@ -562,9 +550,9 @@ psych_bool PsychOpenOnscreenWindow(PsychScreenSettingsType *screenSettings, Psyc
             printf("PTB-INFO: Native %i bit per color framebuffer requested, but the OS doesn't allow it. It only provides %i bpc.\n", (*windowRecord)->depth / 3, bpc);
 
             // We only support the 48 bit color depth / 16 bpc hack on Linux + X11, not on OSX et al.:
-            if ((PSYCH_SYSTEM != PSYCH_LINUX) && ((*windowRecord)->depth == 48)) {
+            if (((*windowRecord)->depth == 48) && !((*windowRecord)->specialflags & kPsychIsX11Window)) {
                 printf("\nPTB-ERROR: Your script requested a %i bpp, %i bpc framebuffer, but i can't provide this for you, because\n", (*windowRecord)->depth, (*windowRecord)->depth / 3);
-                printf("PTB-ERROR: my own 16 bpc setup code only works on Linux with a properly setup X11/GLX display backend.\n");
+                printf("PTB-ERROR: my own 16 bpc setup code only works on Linux with a properly setup X11 display backend.\n");
                 PsychOSCloseWindow(*windowRecord);
                 FreeWindowRecordFromPntr(*windowRecord);
                 return(FALSE);
@@ -577,18 +565,21 @@ psych_bool PsychOpenOnscreenWindow(PsychScreenSettingsType *screenSettings, Psyc
                 (gpuMaintype != kPsychRadeon) || (gpuMinortype > 0xffff) || (PsychGetScreenDepthValue(screenSettings->screenNumber) != 24)) {
                 printf("\nPTB-ERROR: Your script requested a %i bpp, %i bpc framebuffer, but i can't provide this for you, because\n", (*windowRecord)->depth, (*windowRecord)->depth / 3);
                 if ((gpuMaintype != kPsychRadeon) || (gpuMinortype > 0xffff)) {
-                    printf("PTB-ERROR: this functionality is not supported on your model of graphics card. Only AMD/ATI GPU's of the\n");
-                    printf("PTB-ERROR: Radeon X1000 series, and Radeon HD-2000 series and later models, and corresponding FireGL/FirePro\n");
-                    printf("PTB-ERROR: cards are supported. This covers basically all AMD graphics cards since about the year 2007.\n");
-                    printf("PTB-ERROR: NVidia graphics cards since the GeForce-8000 series and corresponding Quadro cards can be setup\n");
-                    printf("PTB-ERROR: for 10 bpc framebuffer support by specifying a 'DefaultDepth' setting of 30 bit in the xorg.conf file.\n");
-                    printf("PTB-ERROR: The latest Intel graphics cards may be able to achieve 10 bpc with 'DefaultDepth' 30 setting if your\n");
-                    printf("PTB-ERROR: graphics driver is recent enough, however this hasn't been actively tested on Intel cards so far.\n\n");
+                    printf("PTB-ERROR: this functionality is not supported on your model of graphics card. Only AMD GPU's from the\n");
+                    printf("PTB-ERROR: Radeon X1000 series up to and including the Radeon Vega series, and corresponding FireGL/\n");
+                    printf("PTB-ERROR: FirePro/RadeonPro cards are supported. This covers basically all AMD gpu's introduced in the\n");
+                    printf("PTB-ERROR: years from late 2005 to mid-2019, but not AMD RX 5000 (RDNA) and later or AMD Ryzen integrated\n");
+                    printf("PTB-ERROR: processor graphics chips and later since late 2017, e.g., AMD Raven Ridge, Renoir, Picasso etc.\n");
+                    printf("PTB-ERROR: These recent AMD gpu's with the new DCN display engine, as well as all NVidia graphics cards\n");
+                    printf("PTB-ERROR: since the GeForce-8000 series and corresponding Quadro cards can be setup for 10 bpc framebuffer\n");
+                    printf("PTB-ERROR: mode by specifying a 'DefaultDepth' setting of 30 bit in the xorg.conf file. The same is true for\n");
+                    printf("PTB-ERROR: modern Intel graphics chips which may be able to achieve 10 bpc with 'DefaultDepth' 30 setting if your\n");
+                    printf("PTB-ERROR: graphics driver is recent enough. Use XOrgConfCreator and XOrgConfSelector to guide you through the\n");
+                    printf("PTB-ERROR: setup process for 10 bpc / 30 bit on such NVidia, Intel and modern AMD graphics cards.\n");
                 }
                 else if (!PsychOSIsKernelDriverAvailable(screenSettings->screenNumber)) {
                     printf("PTB-ERROR: Linux low-level MMIO access by Psychtoolbox is disabled or not permitted on your system in this session.\n");
-                    printf("PTB-ERROR: On Linux you must either configure your system by executing the script 'PsychLinuxConfiguration' once,\n");
-                    printf("PTB-ERROR: or start Octave or Matlab as root, ie. system administrator or via sudo command for this to work.\n\n");
+                    printf("PTB-ERROR: On Linux you must configure your system by executing the script 'PsychLinuxConfiguration' once.\n\n");
                 }
                 else if (PsychGetScreenDepthValue(screenSettings->screenNumber) != 24) {
                     printf("PTB-ERROR: your display is not set to 24 bit 'DefaultDepth' color depth, but to %i bit color depth in xorg.conf.\n\n",
@@ -866,9 +857,10 @@ psych_bool PsychOpenOnscreenWindow(PsychScreenSettingsType *screenSettings, Psyc
             // presentation duration of our splash startup screen so users
             // are nudged to at least once notice what is displayed there:
 
-            // Set splash image display duration to at least 10 seconds, unless our
-            // special joker is used:
-            if (NULL == getenv("PTB_SKIPSPLASH")) splashMinDurationSecs = 10.0;
+            // Set splash image display duration to at least 10 seconds, unless our special
+            // joker is used or this is not the first onscreen window open in this session:
+            if (!getenv("PTB_SKIPSPLASH") && PsychIsLastOnscreenWindow(*windowRecord))
+                splashMinDurationSecs = 10.0;
         }
 
         // Close marker file in any case:
@@ -950,6 +942,17 @@ psych_bool PsychOpenOnscreenWindow(PsychScreenSettingsType *screenSettings, Psyc
 
     // Get final synctest setting after GPU caps detection:
     skip_synctests = PsychPrefStateGet_SkipSyncTests();
+
+    // For external display backends like Vulkan, we rely on that backend to deal with timing
+    // and trouble, so only run time-reduced synctests, and skip various warnings if they should
+    // fail, as this is strictly non of our business:
+    if ((*windowRecord)->specialflags & kPsychExternalDisplayMethod) {
+        if (PsychPrefStateGet_Verbosity() > 2)
+            printf("PTB-INFO: External display method is in use for this window. Running short and lenient timing tests only.\n");
+
+        if (skip_synctests < 1)
+            skip_synctests = 1;
+    }
 
     // If this is a windowed onscreen window, be lenient with synctests. Make sure they never fail,
     // because miserable timing is expected in windowed mode. However, if we are running under a
@@ -1055,11 +1058,61 @@ psych_bool PsychOpenOnscreenWindow(PsychScreenSettingsType *screenSettings, Psyc
         glClearColor(0,0,0,1);
     }
 
-    // Use classic code path for classic OpenGL, unless we are on the Raspberry Pi's VideoCore-4
-    // gpu, where this path is so slow it would cause sync-failure and other cascading trouble,
-    // or on OSX where we suspect Apple might have screwed up the glDrawPixels command we use in
-    // the classic path:
-    if (PsychIsGLClassic(*windowRecord) && !strstr((*windowRecord)->gpuCoreId, "VC4") && (PSYCH_SYSTEM != PSYCH_OSX)) {
+    // splashTextureRecord already exists? Otherwise create and assign it:
+    if (!splashTextureRecord) {
+        PsychCreateWindowRecord(&splashTextureRecord);
+        splashTextureRecord->windowType = kPsychTexture;
+        splashTextureRecord->screenNumber = (*windowRecord)->screenNumber;
+
+        // Assign parent window and copy its inheritable properties:
+        PsychAssignParentWindow(splashTextureRecord, *windowRecord);
+
+        // Mark it valid and return handle to userspace:
+        PsychSetWindowRecordValid(splashTextureRecord);
+
+        // Ok, setup texture record for RGB8 texture:
+        splashTextureRecord->depth = 3 * 8;
+        splashTextureRecord->nrchannels = 3;
+        PsychMakeRect(splashTextureRecord->rect, 0, 0, splash_image.width, splash_image.height);
+
+        // Orientation is 3 - like an upside down Offscreen window texture.
+        splashTextureRecord->textureOrientation = 3;
+
+        // Setting memsize to zero prevents unwanted free() operation in PsychDeleteTexture...
+        splashTextureRecord->textureMemorySizeBytes = 0;
+
+        // Assign pointer to pixeldata:
+        splashTextureRecord->textureMemory = (GLuint*) &splash_image.pixel_data[0];
+
+        // Let PsychCreateTexture() do the rest of the job of creating, setting up and
+        // filling an OpenGL texture with memory buffers image content:
+        PsychCreateTexture(splashTextureRecord);
+
+        // Compute logo_x and logo_y x,y offset for drawing the startup logo:
+        logo_x = ((int) PsychGetWidthFromRect((*windowRecord)->rect) - (int) splash_image.width) / 2;
+        logo_x = (logo_x > 0) ? logo_x : 0;
+        logo_y = ((int) PsychGetHeightFromRect((*windowRecord)->rect) - (int) splash_image.height) / 2;
+        logo_y = (logo_y > 0) ? logo_y : 0;
+
+        // Client rect of a texture is always == rect of it, but here we abuse it as
+        // target rect:
+        PsychCopyRect(splashTextureRecord->clientrect, splashTextureRecord->rect);
+        splashTextureRecord->clientrect[kPsychLeft]   += logo_x;
+        splashTextureRecord->clientrect[kPsychRight]  += logo_x;
+        splashTextureRecord->clientrect[kPsychTop]    += logo_y;
+        splashTextureRecord->clientrect[kPsychBottom] += logo_y;
+
+        // Clamp size of logo to size of onscreen window during drawing, so it scales down properly on
+        // small displays:
+        if (splashTextureRecord->clientrect[kPsychRight] > PsychGetWidthFromRect((*windowRecord)->rect))
+            splashTextureRecord->clientrect[kPsychRight] = PsychGetWidthFromRect((*windowRecord)->rect);
+
+        if (splashTextureRecord->clientrect[kPsychBottom] > PsychGetHeightFromRect((*windowRecord)->rect))
+            splashTextureRecord->clientrect[kPsychBottom] = PsychGetHeightFromRect((*windowRecord)->rect);
+    }
+
+    // Predraw welcome splash image - or neutral background if no splash image is wanted:
+    {
         double tDummy;
 
         // Classic OpenGL-1/2 splash image drawing code:
@@ -1108,84 +1161,6 @@ psych_bool PsychOpenOnscreenWindow(PsychScreenSettingsType *screenSettings, Psyc
         }
 
         glDrawBuffer(GL_BACK);
-    }
-    else {
-        // Non-classic (OpenGL-3/4 and OpenGL-ES) splash screen display code:
-        double tDummy;
-        PsychWindowRecordType *textureRecord;
-        PsychCreateWindowRecord(&textureRecord);
-        textureRecord->windowType = kPsychTexture;
-        textureRecord->screenNumber = (*windowRecord)->screenNumber;
-
-        // Assign parent window and copy its inheritable properties:
-        PsychAssignParentWindow(textureRecord, *windowRecord);
-
-        // Mark it valid and return handle to userspace:
-        PsychSetWindowRecordValid(textureRecord);
-
-        // Ok, setup texture record for RGB8 texture:
-        textureRecord->depth = 3 * 8;
-        textureRecord->nrchannels = 3;
-        PsychMakeRect(textureRecord->rect, 0, 0, splash_image.width, splash_image.height);
-
-        // Orientation is 3 - like an upside down Offscreen window texture.
-        textureRecord->textureOrientation = 3;
-
-        // Setting memsize to zero prevents unwanted free() operation in PsychDeleteTexture...
-        textureRecord->textureMemorySizeBytes = 0;
-
-        // Assign pointer to pixeldata:
-        textureRecord->textureMemory = (GLuint*) &splash_image.pixel_data[0];
-
-        // Let PsychCreateTexture() do the rest of the job of creating, setting up and
-        // filling an OpenGL texture with memory buffers image content:
-        PsychCreateTexture(textureRecord);
-
-        // Compute logo_x and logo_y x,y offset for drawing the startup logo:
-        logo_x = ((int) PsychGetWidthFromRect((*windowRecord)->rect) - (int) splash_image.width) / 2;
-        logo_x = (logo_x > 0) ? logo_x : 0;
-        logo_y = ((int) PsychGetHeightFromRect((*windowRecord)->rect) - (int) splash_image.height) / 2;
-        logo_y = (logo_y > 0) ? logo_y : 0;
-
-        // Client rect of a texture is always == rect of it, but here we abuse it as
-        // target rect:
-        PsychCopyRect(textureRecord->clientrect, textureRecord->rect);
-        textureRecord->clientrect[kPsychLeft]   += logo_x;
-        textureRecord->clientrect[kPsychRight]  += logo_x;
-        textureRecord->clientrect[kPsychTop]    += logo_y;
-        textureRecord->clientrect[kPsychBottom] += logo_y;
-
-        // Clear framebuffer and (optionally, usually) blit texture with splash-image three times with
-        // intermediate bufferswap, to make sure we get a well defined image even on a triple-buffered
-        // setup:
-        glClear(GL_COLOR_BUFFER_BIT);
-        if (visual_debuglevel >= 4) PsychBlitTextureToDisplay(textureRecord, *windowRecord, textureRecord->rect, textureRecord->clientrect, 0, 1, 1);
-        PsychOSFlipWindowBuffers(*windowRecord);
-        PsychOSGetSwapCompletionTimestamp(*windowRecord, 0, &tDummy);
-
-        // Protect against multi-threading trouble if needed:
-        PsychLockedTouchFramebufferIfNeeded(*windowRecord);
-
-        glClear(GL_COLOR_BUFFER_BIT);
-        if (visual_debuglevel >= 4) PsychBlitTextureToDisplay(textureRecord, *windowRecord, textureRecord->rect, textureRecord->clientrect, 0, 1, 1);
-        PsychOSFlipWindowBuffers(*windowRecord);
-        PsychOSGetSwapCompletionTimestamp(*windowRecord, 0, &tDummy);
-
-        // Protect against multi-threading trouble if needed:
-        PsychLockedTouchFramebufferIfNeeded(*windowRecord);
-
-        glClear(GL_COLOR_BUFFER_BIT);
-        if (visual_debuglevel >= 4) PsychBlitTextureToDisplay(textureRecord, *windowRecord, textureRecord->rect, textureRecord->clientrect, 0, 1, 1);
-        PsychOSFlipWindowBuffers(*windowRecord);
-        PsychOSGetSwapCompletionTimestamp(*windowRecord, 0, &tDummy);
-
-        // Protect against multi-threading trouble if needed:
-        PsychLockedTouchFramebufferIfNeeded(*windowRecord);
-
-        // Done. Delete splash-image texture:
-        PsychFreeTextureForWindowRecord(textureRecord);
-        FreeWindowRecordFromPntr(textureRecord);
-        textureRecord = NULL;
     }
 
     // Make sure that the gfx-pipeline has settled to a stable state...
@@ -1487,6 +1462,11 @@ psych_bool PsychOpenOnscreenWindow(PsychScreenSettingsType *screenSettings, Psyc
                 stddev = (PsychOSIsDWMEnabled(screenSettings->screenNumber) && (PSYCH_SYSTEM != PSYCH_LINUX)) ? (5 * maxStddev) : maxStddev;
                 // If skipping of sync-test is requested, we limit the calibration to 1 sec.
                 maxsecs = (skip_synctests) ? 1 : maxDuration;
+
+                // Ok, in case of external display backend, give it 3 seconds for a bit better results:
+                if ((*windowRecord)->specialflags & kPsychExternalDisplayMethod)
+                    maxsecs = 3;
+
                 retry_count++;
                 ifi_estimate = PsychGetMonitorRefreshInterval(*windowRecord, &numSamples, &maxsecs, &stddev, ((ifi_nominal > 0) ? ifi_nominal : ifi_beamestimate), &did_pageflip);
 
@@ -1561,6 +1541,14 @@ psych_bool PsychOpenOnscreenWindow(PsychScreenSettingsType *screenSettings, Psyc
         ifi_beamestimate = 0;
     }
 
+    // Does a splashTextureRecord exist and is associated with this about-to-die window?
+    if (splashTextureRecord) {
+        // Yes. Delete splash-image texture:
+        PsychFreeTextureForWindowRecord(splashTextureRecord);
+        FreeWindowRecordFromPntr(splashTextureRecord);
+        splashTextureRecord = NULL;
+    }
+
     if (PsychPrefStateGet_Verbosity() > 2) {
         printf("\n\nPTB-INFO: OpenGL-Renderer is %s :: %s :: %s\n", (char*) glGetString(GL_VENDOR), (char*) glGetString(GL_RENDERER), (char*) glGetString(GL_VERSION));
         if (VRAMTotal > 0) printf("PTB-INFO: Renderer has %li MB of VRAM and a maximum %li MB of texture memory.\n", VRAMTotal, TexmemTotal);
@@ -1579,6 +1567,10 @@ psych_bool PsychOpenOnscreenWindow(PsychScreenSettingsType *screenSettings, Psyc
             else {
                 if (PsychPrefStateGet_VBLTimestampingMode()>=0) {
                     printf("PTB-INFO: Will use beamposition query for accurate Flip time stamping.\n");
+                }
+                else if ((*windowRecord)->specialflags & kPsychExternalDisplayMethod) {
+                    printf("PTB-INFO: Beamposition queries are supported, but disabled. Screen('Flip') timestamping will\n");
+                    printf("PTB-INFO: fully rely on mechanisms in the external display backend, with unknown precision.\n");
                 }
                 else {
                     printf("PTB-INFO: Beamposition queries are supported, but disabled. Using basic timestamping as fallback:\n");
@@ -1600,6 +1592,10 @@ psych_bool PsychOpenOnscreenWindow(PsychScreenSettingsType *screenSettings, Psyc
                 if (PSYCH_SYSTEM == PSYCH_OSX || PSYCH_SYSTEM == PSYCH_LINUX) {
                     printf("PTB-INFO: Beamposition queries unsupported on this system. Will try to use kernel-level vbl interrupts as fallback.\n");
                 }
+            }
+            else if ((*windowRecord)->specialflags & kPsychExternalDisplayMethod) {
+                printf("PTB-INFO: Beamposition queries unsupported or defective on this system. Screen('Flip') timestamping will\n");
+                printf("PTB-INFO: fully rely on mechanisms in the external display backend, with unknown precision and reliability.\n");
             }
             else {
                 printf("PTB-INFO: Beamposition queries unsupported or defective on this system. Using basic timestamping as fallback.\n");
@@ -1700,71 +1696,73 @@ psych_bool PsychOpenOnscreenWindow(PsychScreenSettingsType *screenSettings, Psyc
     // Autodetect and setup type of texture extension to use for high-perf texture mapping:
     PsychDetectTextureTarget(*windowRecord);
 
-    // Check for desktop compositor activity on MS-Windows Vista and later:
-    if ((PsychPrefStateGet_Verbosity() > 1) && PsychIsMSVista() && PsychOSIsDWMEnabled(0)) {
-        #if PSYCH_SYSTEM == PSYCH_WINDOWS
-        // Regular fullscreen onscreen window on Windows-10 or later OS'es?
-        if (PsychOSIsMSWin10() && ((*windowRecord)->specialflags & kPsychIsFullscreenWindow) && (PsychPrefStateGet_WindowShieldingLevel() >= 2000)) {
-            // Yes. Initial testing suggests we might be mostly fine timing-wise despite the DWM being active, both
-            // on single-display and multi-display setups. Therefore tone down the DWM warnings and just tell the user
-            // to tread carefully:
-            printf("PTB-INFO: ==============================================================================================================================\n");
-            printf("PTB-INFO: WINDOWS DWM DESKTOP COMPOSITOR IS ACTIVE. On this Windows-10 or later system, Psychtoolbox can no longer reliably detect if\n");
-            printf("PTB-INFO: this will cause trouble for timing and integrity of visual stimuli or not. You might be just fine, or you could be in trouble.\n");
-            printf("PTB-INFO: Use external measurement equipment and independent procedures to verify reliability of timing if you care about proper timing.\n");
-            printf("PTB-INFO: ==============================================================================================================================\n");
-        }
-        else {
-            // DWM is active on at least one display. On a single-display setup, this means
-            // it will definitely affect/interfere with our onscreen windows timing and we should
-            // warn the user about likely performance and timing degradation. The same is true if
-            // our onscreen window is not a fullscreen window, in which case it will always interfere
-            // with our window:
-            if ((PsychGetNumDisplays() == 1) || !((*windowRecord)->specialflags & kPsychIsFullscreenWindow)) {
-                // Ok, DWM will definitely mess with our stimuli: Warn the user about the likely hazard.
-                printf("PTB-WARNING: ==============================================================================================================================\n");
-                printf("PTB-WARNING: WINDOWS DWM DESKTOP COMPOSITOR IS ACTIVE! ALL FLIP STIMULUS ONSET TIMESTAMPS WILL BE VERY LIKELY UNRELIABLE AND LESS ACCURATE!\n");
-                printf("PTB-WARNING: STIMULUS ONSET TIMING WILL BE UNRELIABLE AS WELL, AND GRAPHICS PERFORMANCE MAY BE SEVERELY REDUCED! STIMULUS IMAGES MAY NOT\n");
-                printf("PTB-WARNING: SHOW UP AT ALL! DO NOT USE THIS MODE FOR RUNNING REAL EXPERIMENT SESSIONS WITH ANY REQUIREMENTS FOR ACCURATE TIMING!\n");
-                printf("PTB-WARNING: ==============================================================================================================================\n");
+    if (!((*windowRecord)->specialflags & kPsychExternalDisplayMethod)) {
+        // Check for desktop compositor activity on MS-Windows Vista and later:
+        if ((PsychPrefStateGet_Verbosity() > 1) && PsychIsMSVista() && PsychOSIsDWMEnabled(0)) {
+            #if PSYCH_SYSTEM == PSYCH_WINDOWS
+            // Regular fullscreen onscreen window on Windows-10 or later OS'es?
+            if (PsychOSIsMSWin10() && ((*windowRecord)->specialflags & kPsychIsFullscreenWindow) && (PsychPrefStateGet_WindowShieldingLevel() >= 2000)) {
+                // Yes. Initial testing suggests we might be mostly fine timing-wise despite the DWM being active, both
+                // on single-display and multi-display setups. Therefore tone down the DWM warnings and just tell the user
+                // to tread carefully:
+                printf("PTB-INFO: ==============================================================================================================================\n");
+                printf("PTB-INFO: WINDOWS DWM DESKTOP COMPOSITOR IS ACTIVE. On this Windows-10 or later system, Psychtoolbox can no longer reliably detect if\n");
+                printf("PTB-INFO: this will cause trouble for timing and integrity of visual stimuli or not. You might be just fine, or you could be in trouble.\n");
+                printf("PTB-INFO: Use external measurement equipment and independent procedures to verify reliability of timing if you care about proper timing.\n");
+                printf("PTB-INFO: ==============================================================================================================================\n");
             }
             else {
-                // This is a multi-display setup with the DWM active on at least some display(s) and our
-                // stimulus onscreen window is a fullscreen window that covers at least one whole display.
-                // We can't know if our stimulus display is affected, or only other irrelevant GUI desktop
-                // displays. At least on one tested recent versions of Windows-7 and presumably Windows-8,
-                // DWM was interfering massively with fullscreen stimulus displays, leading to completely
-                // wrong stimulus onset timestamps:
-                printf("PTB-WARNING: ============================================================================================================================\n");
-                printf("PTB-WARNING: WINDOWS DWM DESKTOP COMPOSITOR IS ACTIVE ON AT LEAST ONE DISPLAY! ALL FLIP STIMULUS ONSET TIMESTAMPS WILL BE LIKELY WRONG!\n");
-                printf("PTB-WARNING: STIMULUS ONSET TIMING WILL BE UNRELIABLE AS WELL, AND GRAPHICS PERFORMANCE MAY BE SEVERELY REDUCED! STIMULUS IMAGES MAY NOT\n");
-                printf("PTB-WARNING: SHOW UP AT ALL! DO NOT USE THIS MODE FOR RUNNING REAL EXPERIMENT SESSIONS WITH ANY REQUIREMENTS FOR ACCURATE TIMING!\n");
-                printf("PTB-WARNING: ============================================================================================================================\n");
+                // DWM is active on at least one display. On a single-display setup, this means
+                // it will definitely affect/interfere with our onscreen windows timing and we should
+                // warn the user about likely performance and timing degradation. The same is true if
+                // our onscreen window is not a fullscreen window, in which case it will always interfere
+                // with our window:
+                if ((PsychGetNumDisplays() == 1) || !((*windowRecord)->specialflags & kPsychIsFullscreenWindow)) {
+                    // Ok, DWM will definitely mess with our stimuli: Warn the user about the likely hazard.
+                    printf("PTB-WARNING: ==============================================================================================================================\n");
+                    printf("PTB-WARNING: WINDOWS DWM DESKTOP COMPOSITOR IS ACTIVE! ALL FLIP STIMULUS ONSET TIMESTAMPS WILL BE VERY LIKELY UNRELIABLE AND LESS ACCURATE!\n");
+                    printf("PTB-WARNING: STIMULUS ONSET TIMING WILL BE UNRELIABLE AS WELL, AND GRAPHICS PERFORMANCE MAY BE SEVERELY REDUCED! STIMULUS IMAGES MAY NOT\n");
+                    printf("PTB-WARNING: SHOW UP AT ALL! DO NOT USE THIS MODE FOR RUNNING REAL EXPERIMENT SESSIONS WITH ANY REQUIREMENTS FOR ACCURATE TIMING!\n");
+                    printf("PTB-WARNING: ==============================================================================================================================\n");
+                }
+                else {
+                    // This is a multi-display setup with the DWM active on at least some display(s) and our
+                    // stimulus onscreen window is a fullscreen window that covers at least one whole display.
+                    // We can't know if our stimulus display is affected, or only other irrelevant GUI desktop
+                    // displays. At least on one tested recent versions of Windows-7 and presumably Windows-8,
+                    // DWM was interfering massively with fullscreen stimulus displays, leading to completely
+                    // wrong stimulus onset timestamps:
+                    printf("PTB-WARNING: ============================================================================================================================\n");
+                    printf("PTB-WARNING: WINDOWS DWM DESKTOP COMPOSITOR IS ACTIVE ON AT LEAST ONE DISPLAY! ALL FLIP STIMULUS ONSET TIMESTAMPS WILL BE LIKELY WRONG!\n");
+                    printf("PTB-WARNING: STIMULUS ONSET TIMING WILL BE UNRELIABLE AS WELL, AND GRAPHICS PERFORMANCE MAY BE SEVERELY REDUCED! STIMULUS IMAGES MAY NOT\n");
+                    printf("PTB-WARNING: SHOW UP AT ALL! DO NOT USE THIS MODE FOR RUNNING REAL EXPERIMENT SESSIONS WITH ANY REQUIREMENTS FOR ACCURATE TIMING!\n");
+                    printf("PTB-WARNING: ============================================================================================================================\n");
+                }
             }
+            #endif
         }
-        #endif
-    }
-    else if ((PsychPrefStateGet_Verbosity() > 1) && PsychIsMSVista() && (PsychGetNumDisplays() > 1)) {
-        // MS-Vista or later with DWM effectively disabled/inactive. On a single display setup,
-        // this seems to be fine. On a dual-display setup, timing was wrong as well.
-        printf("PTB-WARNING: ==============================================================================================================\n");
-        printf("PTB-WARNING: WINDOWS SYSTEM IS RUNNING IN MULTI-DISPLAY MODE! ALL FLIP STIMULUS ONSET TIMESTAMPS WILL BE LIKELY UNRELIABLE!\n");
-        printf("PTB-WARNING: STIMULUS ONSET TIMING WILL BE UNRELIABLE AS WELL, AND GRAPHICS PERFORMANCE MAY BE SEVERELY REDUCED!\n");
-        printf("PTB-WARNING: DO NOT USE MULTI-DISPLAY MODE FOR RUNNING REAL EXPERIMENT SESSIONS WITH ANY REQUIREMENTS FOR ACCURATE TIMING!\n");
-        printf("PTB-WARNING: ==============================================================================================================\n");
+        else if ((PsychPrefStateGet_Verbosity() > 1) && PsychIsMSVista() && (PsychGetNumDisplays() > 1)) {
+            // MS-Vista or later with DWM effectively disabled/inactive. On a single display setup,
+            // this seems to be fine. On a dual-display setup, timing was wrong as well.
+            printf("PTB-WARNING: ==============================================================================================================\n");
+            printf("PTB-WARNING: WINDOWS SYSTEM IS RUNNING IN MULTI-DISPLAY MODE! ALL FLIP STIMULUS ONSET TIMESTAMPS WILL BE LIKELY UNRELIABLE!\n");
+            printf("PTB-WARNING: STIMULUS ONSET TIMING WILL BE UNRELIABLE AS WELL, AND GRAPHICS PERFORMANCE MAY BE SEVERELY REDUCED!\n");
+            printf("PTB-WARNING: DO NOT USE MULTI-DISPLAY MODE FOR RUNNING REAL EXPERIMENT SESSIONS WITH ANY REQUIREMENTS FOR ACCURATE TIMING!\n");
+            printf("PTB-WARNING: ==============================================================================================================\n");
+        }
+
+        // Check for desktop compositor activity on OSX: Check not (yet) applicable on Linux, as it is only reliable with KDE/KWin...
+        if ((PSYCH_SYSTEM == PSYCH_OSX) && PsychOSIsDWMEnabled(screenSettings->screenNumber) && (PsychPrefStateGet_Verbosity() > 1)) {
+            // Desktop compositor active for our onscreen window. Explain consequences to user:
+            printf("PTB-WARNING: ==================================================================================================================\n");
+            printf("PTB-WARNING: DESKTOP COMPOSITOR IS ACTIVE! ALL FLIP STIMULUS ONSET TIMESTAMPS WILL BE VERY LIKELY UNRELIABLE AND LESS ACCURATE!\n");
+            printf("PTB-WARNING: STIMULUS ONSET TIMING WILL BE UNRELIABLE AS WELL, AND GRAPHICS PERFORMANCE MAY BE REDUCED!\n");
+            printf("PTB-WARNING: DO NOT USE THIS MODE FOR RUNNING REAL EXPERIMENT SESSIONS WITH ANY REQUIREMENTS FOR ACCURATE TIMING!\n");
+            printf("PTB-WARNING: ==================================================================================================================\n");
+        }
     }
 
-    // Check for desktop compositor activity on OSX: Check not (yet) applicable on Linux, as it is only reliable with KDE/KWin...
-    if ((PSYCH_SYSTEM == PSYCH_OSX) && PsychOSIsDWMEnabled(screenSettings->screenNumber) && (PsychPrefStateGet_Verbosity() > 1)) {
-        // Desktop compositor active for our onscreen window. Explain consequences to user:
-        printf("PTB-WARNING: ==================================================================================================================\n");
-        printf("PTB-WARNING: DESKTOP COMPOSITOR IS ACTIVE! ALL FLIP STIMULUS ONSET TIMESTAMPS WILL BE VERY LIKELY UNRELIABLE AND LESS ACCURATE!\n");
-        printf("PTB-WARNING: STIMULUS ONSET TIMING WILL BE UNRELIABLE AS WELL, AND GRAPHICS PERFORMANCE MAY BE REDUCED!\n");
-        printf("PTB-WARNING: DO NOT USE THIS MODE FOR RUNNING REAL EXPERIMENT SESSIONS WITH ANY REQUIREMENTS FOR ACCURATE TIMING!\n");
-        printf("PTB-WARNING: ==================================================================================================================\n");
-    }
-
-    if (skip_synctests < 2) {
+    if ((skip_synctests < 2) && !((*windowRecord)->specialflags & kPsychExternalDisplayMethod)) {
         // Reliable estimate? These are our minimum requirements:
         // At least minSamples valid samples collected.
         // stddev (== noise) not greater than maxStddev, unless we are sure pageflipping under our full control was used during
@@ -1882,9 +1880,46 @@ psych_bool PsychOpenOnscreenWindow(PsychScreenSettingsType *screenSettings, Psyc
     // This condition may not hold on a G-Sync/FreeSync setup, so skip fail in that case.
     if ((ifi_beamestimate < 0.8 * ifi_estimate || ifi_beamestimate > 1.2 * ifi_estimate) && (ifi_beamestimate > 0) &&
         !PsychVRRActive(*windowRecord)) {
-        if (!sync_trouble && PsychPrefStateGet_Verbosity()>1)
-            printf("\nWARNING: Mismatch between measured monitor refresh intervals! This indicates problems with rasterbeam position queries.\n");
-        sync_trouble = true;
+        // Mismatch! This is bad and often the case on Windows-10 multi-display setups, due to
+        // DWM compositor interference, especially if different displays run at different nominal
+        // refresh rates.
+        // Normal setup with OpenGL display backend?
+        if (!((*windowRecord)->specialflags & kPsychExternalDisplayMethod)) {
+            // Game over for rasterbeam position queries: Inaccurate, but better safe than sorry...
+            if (!sync_trouble && PsychPrefStateGet_Verbosity()>1)
+                printf("\nPTB-WARNING: Mismatch between measured monitor refresh intervals! This indicates problems with rasterbeam position queries.\n");
+
+            sync_trouble = true;
+        }
+        else {
+            // External display method used for display and display timing/timestamping.
+            // At least on MS-Windows on a dual-display setup, measured ifi_estimate can
+            // be as wrong as it is irrelevant to timing/timstamping, but we may still
+            // need our beamposition query timestamping to augment the external display
+            // method, e.g., Vulkan without native Vulkan timestamping support.
+            //
+            // Therefore we use ifi_nominal as a reference to check plausibility of
+            // ifi_beamestimate, as that is more likely to be right, even on MS-Windows
+            // dual-display setups, where the DWM compositor may interfere with ifi_estimate.
+            // Testing against hw equipment showed errors of more than 5 msecs at 60 Hz if
+            // we can not utilize beampos timestamping on Windows-10, so we really want this.
+            if ((ifi_beamestimate < 0.8 * ifi_nominal || ifi_beamestimate > 1.2 * ifi_nominal) && (ifi_nominal > 0)) {
+                // Also mismatch with ifi_nominal -> Most likely beamposition queries are defective, so give up:
+                if (!sync_trouble && PsychPrefStateGet_Verbosity() > 1)
+                    printf("\nPTB-WARNING: Mismatch between beamposition-measured and OS reported monitor refresh interval! This indicates problems with rasterbeam position queries.\n");
+
+                sync_trouble = true;
+            }
+            else {
+                // Matching values -> Assume the ifi_estimate is wrong due to compositor interference.
+                // Keep beamposition method going, and make it new reference for beampos timestamping:
+                (*windowRecord)->VideoRefreshInterval = (!sync_trouble) ? ifi_beamestimate : ifi_nominal;
+
+                if (PsychPrefStateGet_Verbosity() > 1)                
+                    printf("\nPTB-WARNING: Mismatch between measured monitor refresh intervals! Assuming VBL sync measurement is wrong, overriding reference refresh interval to %f msecs.\n",
+                           1000 * (*windowRecord)->VideoRefreshInterval);
+            }
+        }
     }
 
     if (sync_trouble) {
@@ -2029,7 +2064,7 @@ void PsychCloseWindow(PsychWindowRecordType *windowRecord)
         // Sync and idle the pipeline again:
         glFinish();
 
-        // We need to NULL-out all references to the - now destroyed - OpenGL context:
+        // We need to NULL-out all references to the - about to be destroyed - OpenGL context:
         PsychCreateVolatileWindowRecordPointerList(&numWindows, &windowRecordArray);
         for(i=0;i<numWindows;i++) {
             if (windowRecordArray[i]->targetSpecific.contextObject == windowRecord->targetSpecific.contextObject &&
@@ -2135,7 +2170,7 @@ void PsychCloseWindow(PsychWindowRecordType *windowRecord)
         }
     }
 
-    if (PsychIsOnscreenWindow(windowRecord) && PsychPrefStateGet_SkipSyncTests()) {
+    if (PsychIsOnscreenWindow(windowRecord) && PsychPrefStateGet_SkipSyncTests() && !(windowRecord->specialflags & kPsychExternalDisplayMethod)) {
         if (PsychPrefStateGet_Verbosity() > 1) {
             printf("\n\nWARNING: This session of your experiment was run by you with the setting Screen('Preference', 'SkipSyncTests', %i).\n",
                    (int) PsychPrefStateGet_SkipSyncTests());
@@ -3042,8 +3077,8 @@ void* PsychFlipperThreadMain(void* windowRecordToCast)
             if (tnow >= lastvbl) {
                 // Copy current frontbuffer to backbuffer for an idle "no-op" swap:
                 glReadBuffer(GL_FRONT);
-                glRasterPos2i(0, PsychGetHeightFromRect(windowRecord->rect));
-                glCopyPixels(0, 0, PsychGetWidthFromRect(windowRecord->rect), PsychGetHeightFromRect(windowRecord->rect), GL_COLOR);
+                glRasterPos2i(0, (int) PsychGetHeightFromRect(windowRecord->rect));
+                glCopyPixels(0, 0, (int) PsychGetWidthFromRect(windowRecord->rect), (int) PsychGetHeightFromRect(windowRecord->rect), GL_COLOR);
 
                 // Trigger a doublebuffer swap in sync with vblank:
                 PsychOSFlipWindowBuffers(windowRecord);
@@ -4367,7 +4402,7 @@ double PsychFlipWindowBuffers(PsychWindowRecordType *windowRecord, int multiflip
                     PsychPrefStateSet_ConserveVRAM(PsychPrefStateGet_ConserveVRAM() | kPsychUseBeampositionQueryWorkaround);
                     PsychCaptureScreen(-1);
 
-                    if (verbosity > -1) {
+                    if (verbosity > 0) {
                         printf("PTB-WARNING: Beamposition query after flip returned the *impossible* value %i (Valid would be between zero and %i)!!!\n", *beamPosAtFlip, (int) vbl_endline);
                         printf("PTB-WARNING: This is a severe malfunction, indicating a bug in your graphics driver. Our startup test should have\n");
                         printf("PTB-WARNING: caught this and a workaround should have been enabled. Apparently we missed this. Will enable workaround\n");
@@ -4379,7 +4414,7 @@ double PsychFlipWindowBuffers(PsychWindowRecordType *windowRecord, int multiflip
                 else {
                     // Workaround enabled and still this massive beampos failure?!? Or a non-Windows system?
                     // Ok, this is completely foo-bared.
-                    if (verbosity > -1) {
+                    if (verbosity > 0) {
                         if (swap_msc < 0) {
                             // No support for OS-Builtin alternative timestamping, or that mechanism failed.
                             // This is serious:
@@ -4490,7 +4525,7 @@ double PsychFlipWindowBuffers(PsychWindowRecordType *windowRecord, int multiflip
             !(windowRecord->specialflags & kPsychSkipWaitForFlipOnce)) {
 
             // Ohoh! Broken timing. Disable beamposition timestamping for future operations, warn user.
-            if (verbosity > -1) {
+            if (verbosity > 0) {
                 printf("\n\nPTB-ERROR: Screen('Flip'); beamposition timestamping computed an *impossible stimulus onset value* of %f secs, which would indicate that\n", time_at_vbl);
                 printf("PTB-ERROR: stimulus onset happened *before* it was actually requested! (Earliest theoretically possible %f secs).\n\n", time_at_swaprequest);
                 printf("PTB-ERROR: Some more diagnostic values (only for experts): rawTimestamp = %f, scanline = %i\n", time_at_swapcompletion, *beamPosAtFlip);
@@ -4503,7 +4538,7 @@ double PsychFlipWindowBuffers(PsychWindowRecordType *windowRecord, int multiflip
             // Is VBL IRQ timestamping allowed as a fallback and delivered a valid result?
             if (vbltimestampmode >= 1 && postflip_vbltimestamp > 0) {
                 // Available. Meaningful result?
-                if (verbosity > -1) {
+                if (verbosity > 0) {
                     printf("PTB-ERROR: The most likely cause of this error (based on cross-check with kernel-level timestamping) is:\n");
                     if (((postflip_vbltimestamp < time_at_swaprequest - 0.00005) && (postflip_vbltimestamp == preflip_vbltimestamp)) ||
                         ((preflip_vblcount + 1 == postflip_vblcount) && (vbltimestampquery_retrycount > 1))) {
@@ -4555,7 +4590,7 @@ double PsychFlipWindowBuffers(PsychWindowRecordType *windowRecord, int multiflip
                     // iteration:
                     vbltimestampmode = 0;
 
-                    if (verbosity > -1) {
+                    if (verbosity > 0) {
                         printf("PTB-ERROR: I have enabled additional cross checking between beamposition based and kernel-level based timestamping.\n");
                         printf("PTB-ERROR: This should allow to get a better idea of what's going wrong if successive invocations of Screen('Flip');\n");
                         printf("PTB-ERROR: fail to deliver proper timestamps as well. It may even fix the problem if the unlikely culprit would be\n");
@@ -4575,7 +4610,7 @@ double PsychFlipWindowBuffers(PsychWindowRecordType *windowRecord, int multiflip
                     PsychPrefStateSet_VBLTimestampingMode(-1);
                     vbltimestampmode = -1;
 
-                    if (verbosity > -1) {
+                    if (verbosity > 0) {
                         printf("PTB-ERROR: This error can be due to either of the following causes:\n");
                         printf("PTB-ERROR: Very unlikely: Something is broken in your systems beamposition timestamping. I've disabled high precision\n");
                         printf("PTB-ERROR: timestamping for now. Returned timestamps will be less robust and accurate.\n\n");
@@ -4617,7 +4652,7 @@ double PsychFlipWindowBuffers(PsychWindowRecordType *windowRecord, int multiflip
                 else {
                     // Stupid values, but swaprequest not close to VBL, but likely within refresh cycle.
                     // This could be either broken queries, or broken sync to VBL:
-                    if (verbosity > -1) {
+                    if (verbosity > 0) {
                         printf("\n\nPTB-ERROR: Screen('Flip'); kernel-level timestamping computed bogus values!!!\n");
                         printf("PTB-ERROR: vbltimestampquery_retrycount = %i, preflip_vbltimestamp=postflip= %f, time_at_swaprequest= %f\n", (int) vbltimestampquery_retrycount, preflip_vbltimestamp, time_at_swaprequest);
                         printf("PTB-ERROR: This error can be due to either of the following causes:\n");
@@ -4646,7 +4681,7 @@ double PsychFlipWindowBuffers(PsychWindowRecordType *windowRecord, int multiflip
             // the duration of a VBL interval is usually no longer than that.
             if (postflip_vbltimestamp - time_at_swapcompletion > 0.0025) {
                 // VBL irq queries broken! Disable them.
-                if (verbosity > -1) {
+                if (verbosity > 0) {
                     printf("PTB-ERROR: VBL kernel-level timestamp queries broken on your setup [Impossible order of events]!\n");
                     printf("PTB-ERROR: Will disable them for now until the problem is resolved. You may want to restart Matlab and retry.\n");
                     printf("PTB-ERROR: postflip - time_at_swapcompletion == %f secs.\n", postflip_vbltimestamp - time_at_swapcompletion);
@@ -4750,6 +4785,9 @@ double PsychFlipWindowBuffers(PsychWindowRecordType *windowRecord, int multiflip
         // Store OS-Builtin swap timestamp as well, or stimulus onset time from beampos
         // timestamping, if OS-Builtin timestamp not available:
         windowRecord->osbuiltin_swaptime = (tSwapComplete > 0) ? tSwapComplete : *time_at_onset;
+
+        // Store beamposition at flip completion as well:
+        windowRecord->beamposition_at_flip = *beamPosAtFlip;
     }
     else {
         // syncing to vbl is disabled, time_at_vbl becomes meaningless, so we set it to a
@@ -4765,11 +4803,13 @@ double PsychFlipWindowBuffers(PsychWindowRecordType *windowRecord, int multiflip
             time_at_vbl = windowRecord->time_at_last_vbl;
             *time_at_onset = windowRecord->osbuiltin_swaptime;
             *miss_estimate = windowRecord->postflip_vbltimestamp;
+            *beamPosAtFlip = windowRecord->beamposition_at_flip;
         }
         else {
             // Invalidate timestamps of last vbl:
             windowRecord->time_at_last_vbl = 0;
             windowRecord->osbuiltin_swaptime = 0;
+            windowRecord->beamposition_at_flip = -1;
         }
 
         // These are always reset, as not latchable by usercode:
@@ -4862,8 +4902,10 @@ double PsychFlipWindowBuffers(PsychWindowRecordType *windowRecord, int multiflip
         windowRecord->loadGammaTableOnNextFlip = 0;
     }
 
-    // Clear the one-shot flipFlags, so they won't automatically apply to the next flip again: XXX Better do it in SCREENFlip than here?
-    windowRecord->specialflags &= ~(kPsychSkipVsyncForFlipOnce | kPsychSkipTimestampingForFlipOnce | kPsychSkipSwapForFlipOnce | kPsychSkipWaitForFlipOnce);
+    // Clear the one-shot flipFlags, so they won't automatically apply to the next flip again, unless explicitely
+    // asked to not to clear the one-shot flags: XXX Better do it in SCREENFlip than here?
+    if (!(windowRecord->specialflags & kPsychDontAutoResetOneshotFlags))
+        windowRecord->specialflags &= ~(kPsychSkipVsyncForFlipOnce | kPsychSkipTimestampingForFlipOnce | kPsychSkipSwapForFlipOnce | kPsychSkipWaitForFlipOnce);
 
     // We take a second timestamp here to mark the end of the Flip-routine and return it to "userspace"
     PsychGetAdjustedPrecisionTimerSeconds(time_at_flipend);
@@ -5455,6 +5497,29 @@ void PsychPreFlipOperations(PsychWindowRecordType *windowRecord, int clearmode)
     // We also reject any request not coming from the master thread:
     if (!PsychIsMasterThread()) return;
 
+    // Peform extensive checking for OpenGL errors, unless instructed not to do so:
+    if (!(PsychPrefStateGet_ConserveVRAM() & kPsychAvoidCPUGPUSync)) {
+        GLenum glerr;
+
+        glerr = glGetError();
+        if (glerr != GL_NO_ERROR) {
+            if (glerr == GL_OUT_OF_MEMORY) {
+                // Special case: Out of memory after Flip + Postflip operations.
+                printf("PTB-Error: The OpenGL graphics hardware encountered an out of memory condition (Preflip-I)!\n");
+                printf("PTB-Error: One cause of this could be that you are running your display at a too\n");
+                printf("PTB-Error: high resolution and/or use Anti-Aliasing with a multiSample value that\n");
+                printf("PTB-Error: your gfx-card can't handle at the current display resolution. If this is\n");
+                printf("PTB-Error: the case, you may have to reduce multiSample level or display resolution.\n");
+                printf("PTB-Error: It may help to quit and restart Matlab or Octave before continuing.\n");
+            }
+            else {
+                printf("PTB-Error: The OpenGL graphics hardware encountered the following OpenGL error before preflip (Preflip-I): %s.\n", gluErrorString(glerr));
+            }
+        }
+
+        PsychTestForGLErrors();
+    }
+
     // Enable this windowRecords framebuffer as current drawingtarget:
     PsychSetDrawingTarget(windowRecord);
 
@@ -5868,7 +5933,7 @@ void PsychPreFlipOperations(PsychWindowRecordType *windowRecord, int clearmode)
                 // This gets skipped in mono-mode if no conversion needed and only single-pass image processing
                 // applied. In that case, the image processing stage did the final blit already.
                 if (windowRecord->preConversionFBO[viewid] != windowRecord->finalizedFBO[viewid]) {
-                    if ((imagingMode & kPsychNeedOutputConversion) && (PsychPrefStateGet_Verbosity()>3)) printf("PTB-INFO: Processing chain(s) for output conversion disabled -- Using identity copy as workaround.\n");
+                    if ((imagingMode & kPsychNeedOutputConversion) && (PsychPrefStateGet_Verbosity() > 4)) printf("PTB-INFO: Processing chain(s) for output conversion disabled -- Using identity copy as workaround.\n");
                     PsychPipelineExecuteHook(windowRecord, kPsychIdentityBlit, NULL, NULL, TRUE, FALSE, &(windowRecord->fboTable[windowRecord->preConversionFBO[viewid]]), NULL, &(windowRecord->fboTable[windowRecord->finalizedFBO[viewid]]), NULL);
                 }
             }
@@ -5880,22 +5945,25 @@ void PsychPreFlipOperations(PsychWindowRecordType *windowRecord, int clearmode)
             // Encoding CLUTs for devices like the Bits++ is conceivable as well - these would be automatically
             // synchronous to frame updates and could be injected from our own gamma-table functions.
             PsychPipelineExecuteHook(windowRecord, (viewid==0) ? kPsychLeftFinalizerBlit : kPsychRightFinalizerBlit, NULL, NULL, TRUE, FALSE, NULL, NULL, &(windowRecord->fboTable[windowRecord->finalizedFBO[viewid]]), NULL);
+
+            // If the finalizedFBO for this viewid has a renderCompleteSemaphore attached, then signal the semaphore:
+            if (glIsSemaphoreEXT && glIsSemaphoreEXT(windowRecord->fboTable[windowRecord->finalizedFBO[viewid]]->renderCompleteSemaphore)) {
+                GLenum dstLayout = GL_LAYOUT_TRANSFER_SRC_EXT; // GL_LAYOUT_SHADER_READ_ONLY_EXT;
+
+                glSignalSemaphoreEXT(windowRecord->fboTable[windowRecord->finalizedFBO[viewid]]->renderCompleteSemaphore, 0, NULL,
+                                     1, &windowRecord->fboTable[windowRecord->finalizedFBO[viewid]]->coltexid, &dstLayout);
+
+                if (PsychPrefStateGet_Verbosity() > 5)
+                    printf("PTB-INFO: renderCompleteSemaphore for finalizedFBO[%i] of window %i signalled.\n", viewid, windowRecord->windowIndex);
+            }
         }
 
         // At this point we should have either a valid snapshot of the framebuffer in the finalizedFBOs, or
         // (the common case) the final image in the system backbuffers, ready for display after swap.
 
-        // Disabled debug code:
-        if (FALSE) {
-            windowRecord->textureNumber = windowRecord->fboTable[windowRecord->drawBufferFBO[0]]->coltexid;
-
-            // Now we need to blit the new rendertargets texture into the framebuffer. We need to make
-            // sure that alpha-blending is disabled during this blit operation:
-            // Alpha blending not enabled. Just blit it:
-            PsychBlitTextureToDisplay(windowRecord, windowRecord, windowRecord->rect, windowRecord->rect, 0, 0, 1);
-
-            windowRecord->textureNumber = 0;
-        }
+        // Flush the pipeline. This is very important in case renderCompleteSemaphore's are used, otherwise
+        // the external consumer might hang for a long time!
+        glFlush();
 
         // Restore all state, including blending and texturing state:
         glPopAttrib();
@@ -5907,7 +5975,7 @@ void PsychPreFlipOperations(PsychWindowRecordType *windowRecord, int clearmode)
         // the slave-window:
         if (stereo_mode == kPsychDualWindowStereo || (imagingMode & kPsychNeedDualWindowOutput)) {
             if (windowRecord->slaveWindow == NULL) {
-                if (PsychPrefStateGet_Verbosity()>3) printf("PTB-INFO: Skipping master->slave blit operation in dual-window stereo mode or output mode...\n");
+                if (PsychPrefStateGet_Verbosity() > 4) printf("PTB-INFO: Skipping master->slave blit operation in dual-window stereo mode or output mode...\n");
             }
             else {
                 // Perform blit operation: This looks weird. Due to the peculiar implementation of PsychPipelineExecuteHook() we must
@@ -5953,6 +6021,29 @@ void PsychPreFlipOperations(PsychWindowRecordType *windowRecord, int clearmode)
         if (queryState > 0) glEndQuery(GL_TIME_ELAPSED_EXT);
     }
 
+    // Peform extensive checking for OpenGL errors, unless instructed not to do so:
+    if (!(PsychPrefStateGet_ConserveVRAM() & kPsychAvoidCPUGPUSync)) {
+        GLenum glerr;
+
+        glerr = glGetError();
+        if (glerr != GL_NO_ERROR) {
+            if (glerr == GL_OUT_OF_MEMORY) {
+                // Special case: Out of memory after Flip + Postflip operations.
+                printf("PTB-Error: The OpenGL graphics hardware encountered an out of memory condition (Preflip-II)!\n");
+                printf("PTB-Error: One cause of this could be that you are running your display at a too\n");
+                printf("PTB-Error: high resolution and/or use Anti-Aliasing with a multiSample value that\n");
+                printf("PTB-Error: your gfx-card can't handle at the current display resolution. If this is\n");
+                printf("PTB-Error: the case, you may have to reduce multiSample level or display resolution.\n");
+                printf("PTB-Error: It may help to quit and restart Matlab or Octave before continuing.\n");
+            }
+            else {
+                printf("PTB-Error: The OpenGL graphics hardware encountered the following OpenGL error after preflip (Preflip-II): %s.\n", gluErrorString(glerr));
+            }
+        }
+
+        PsychTestForGLErrors();
+    }
+
     return;
 }
 
@@ -5985,6 +6076,27 @@ void PsychPostFlipOperations(PsychWindowRecordType *windowRecord, int clearmode)
 
     // Switch to associated GL-Context of windowRecord:
     PsychSetGLContext(windowRecord);
+
+    // Peform extensive checking for OpenGL errors, unless instructed not to do so:
+    if (!(PsychPrefStateGet_ConserveVRAM() & kPsychAvoidCPUGPUSync)) {
+        glerr = glGetError();
+        if (glerr != GL_NO_ERROR) {
+            if (glerr == GL_OUT_OF_MEMORY) {
+                // Special case: Out of memory after Flip + Postflip operations.
+                printf("PTB-Error: The OpenGL graphics hardware encountered an out of memory condition (I)!\n");
+                printf("PTB-Error: One cause of this could be that you are running your display at a too\n");
+                printf("PTB-Error: high resolution and/or use Anti-Aliasing with a multiSample value that\n");
+                printf("PTB-Error: your gfx-card can't handle at the current display resolution. If this is\n");
+                printf("PTB-Error: the case, you may have to reduce multiSample level or display resolution.\n");
+                printf("PTB-Error: It may help to quit and restart Matlab or Octave before continuing.\n");
+            }
+            else {
+                printf("PTB-Error: The OpenGL graphics hardware encountered the following OpenGL error after flip (I): %s.\n", gluErrorString(glerr));
+            }
+        }
+
+        PsychTestForGLErrors();
+    }
 
     // Imaging pipeline off?
     if (windowRecord->imagingMode==0 || windowRecord->imagingMode == kPsychNeedFastOffscreenWindows) {
@@ -6107,7 +6219,7 @@ void PsychPostFlipOperations(PsychWindowRecordType *windowRecord, int clearmode)
         if (glerr != GL_NO_ERROR) {
             if (glerr == GL_OUT_OF_MEMORY) {
                 // Special case: Out of memory after Flip + Postflip operations.
-                printf("PTB-Error: The OpenGL graphics hardware encountered an out of memory condition!\n");
+                printf("PTB-Error: The OpenGL graphics hardware encountered an out of memory condition (II)!\n");
                 printf("PTB-Error: One cause of this could be that you are running your display at a too\n");
                 printf("PTB-Error: high resolution and/or use Anti-Aliasing with a multiSample value that\n");
                 printf("PTB-Error: your gfx-card can't handle at the current display resolution. If this is\n");
@@ -6115,7 +6227,7 @@ void PsychPostFlipOperations(PsychWindowRecordType *windowRecord, int clearmode)
                 printf("PTB-Error: It may help to quit and restart Matlab or Octave before continuing.\n");
             }
             else {
-                printf("PTB-Error: The OpenGL graphics hardware encountered the following OpenGL error after flip: %s.\n", gluErrorString(glerr));
+                printf("PTB-Error: The OpenGL graphics hardware encountered the following OpenGL error after flip (II): %s.\n", gluErrorString(glerr));
             }
         }
 
@@ -6601,7 +6713,7 @@ void PsychSetupView(PsychWindowRecordType *windowRecord, psych_bool useRawFrameb
             gluOrtho2D(rect[kPsychLeft], rect[kPsychRight], rect[kPsychBottom], rect[kPsychTop]);
         }
         else {
-            glOrthofOES((float) rect[kPsychLeft], (float) rect[kPsychRight], (float) rect[kPsychBottom], (float) rect[kPsychTop], (float) -1, (float) 1);
+            glOrthof((float) rect[kPsychLeft], (float) rect[kPsychRight], (float) rect[kPsychBottom], (float) rect[kPsychTop], (float) -1, (float) 1);
         }
     }
     else {
@@ -6988,7 +7100,7 @@ void PsychDetectAndAssignGfxCapabilities(PsychWindowRecordType *windowRecord)
         RROutput output = (RROutput) 0;
 
         // Get XID / RROutput id of primary output for this screen:
-        PsychOSGetOutputProps(windowRecord->screenNumber, 0, NULL, NULL, (unsigned long *) &output);
+        PsychOSGetOutputProps(windowRecord->screenNumber, 0, FALSE, NULL, NULL, (unsigned long *) &output);
 
         // Map screenNumber to dpy, screen, rootwindow and RandR output:
         PsychGetCGDisplayIDFromScreenNumber(&dpy, windowRecord->screenNumber);
@@ -7417,22 +7529,38 @@ void PsychDetectAndAssignGfxCapabilities(PsychWindowRecordType *windowRecord)
             }
         }
 
-        // INTEL specific detection logic:
-        if ((intel || llvmpipe) && (windowRecord->gfxcaps & kPsychGfxCapFBO) && glewIsSupported("GL_ARB_texture_float")) {
-            // An Intel GPU with FBO and ARB_texture_float support: These are usually of the HD graphics series and
+        // FBO + float textures support on Intel gfx, Broadcom VideoCore 5/6, software renderers?
+        if ((vc4 || intel || llvmpipe) && (windowRecord->gfxcaps & kPsychGfxCapFBO) && glewIsSupported("GL_ARB_texture_float")) {
+            // Intel GPUs with FBO and ARB_texture_float support: These are usually of the HD graphics series and
             // recent enough to support floating point textures and rendertargets with 16 bpc and 32 bpc float, including
             // texture filtering and frame buffer blending, and as a bonus FP32 shading. Iow. they support the whole
             // shebang, as they are at least OpenGL 3.0 / Direct3D-10 compliant:
             if (verbose && intel) printf("Assuming HD graphics core or later: Hardware supports full 16/32 bit floating point textures, frame buffers, filtering and blending, as well as some 32 bit float shading.\n");
+
+            // The software renderers also support the full functionality at full precision:
             if (verbose && llvmpipe) printf("Assuming Gallium LLVM-Pipe rasterizer: Renderer supports full 16/32 bit floating point textures, frame buffers, filtering and blending, as well as some 32 bit float shading.\n");
 
+            // The older Broadcom VideoCore-4 (e.g., RaspberryPi 0/1/2/3) does not support floating point textures
+            // or framebuffers at all, hence never reaches this code path. It is limited to 8 bpc fixed point.
+            //
+            // The Broadcom VideoCore-5/6 (e.g., as found in the RaspberryPi 4), with Mesa v3d driver, does support
+            // 16 and 32 bpc floating point textures and framebuffers. However the hardware does not support texture
+            // linear filtering or framebuffer blending on 32 bpc floating point textures and framebuffers, only on
+            // 16 bpc half-float variants. Therefore we must make sure we use a GLSL filter shader for 32 bpc textures,
+            // and avoid 32 bpc framebuffers for blending, or avoid blending on 32 bpc framebuffers:
+            if (verbose && vc4) printf("Assuming VideoCore-6: Renderer supports full 16/32 bit floating point textures and frame buffers, but only 16 bit float filtering and blending, as well as some 32 bit float shading.\n");
+
+            windowRecord->gfxcaps |= kPsychGfxCapFP32Shading;
             windowRecord->gfxcaps |= kPsychGfxCapFPFBO16;
             windowRecord->gfxcaps |= kPsychGfxCapFPFBO32;
             windowRecord->gfxcaps |= kPsychGfxCapFPFilter16;
-            windowRecord->gfxcaps |= kPsychGfxCapFPFilter32;
             windowRecord->gfxcaps |= kPsychGfxCapFPBlend16;
-            windowRecord->gfxcaps |= kPsychGfxCapFPBlend32;
-            windowRecord->gfxcaps |= kPsychGfxCapFP32Shading;
+
+            if (intel || llvmpipe) {
+                // 32 bpc float filtering and blending only on Intel and software, not on v3d / VideoCore-6:
+                windowRecord->gfxcaps |= kPsychGfxCapFPFilter32;
+                windowRecord->gfxcaps |= kPsychGfxCapFPBlend32;
+            }
         }
     }
 
@@ -7495,8 +7623,8 @@ void PsychDetectAndAssignGfxCapabilities(PsychWindowRecordType *windowRecord)
             printf("PTB-INFO: Another reason for lack of hardware OpenGL could be that GNU/Octave's own opengl32.dll library\n");
             printf("PTB-INFO: has not been deleted or renamed by you, so it is enforcing software rendering.\n");
             printf("PTB-INFO: You have to delete or rename that file and restart Octave for this to work.\n");
-            printf("PTB-INFO: E.g., on Octave-5.1.0, the file to delete or rename would be likely this:\n");
-            printf("PTB-INFO: C:\\Octave\\Octave-5.1.0.0\\mingw64\\bin\\opengl32.dll\n\n");            
+            printf("PTB-INFO: E.g., on Octave-6.1 at its standard installation location, the file to delete or rename would be likely this:\n");
+            printf("PTB-INFO: C:\\Program Files\\GNU Octave\\Octave-6.1.0\\mingw64\\bin\\opengl32.dll\n\n");            
             #endif
             // Disable all sync tests and display timing calibrations, unless usercode already did something similar:
             if (PsychPrefStateGet_SkipSyncTests() < 1) PsychPrefStateSet_SkipSyncTests(2);
@@ -7777,4 +7905,3 @@ void PsychLockedTouchFramebufferIfNeeded(PsychWindowRecordType *windowRecord)
         #endif
     }
 }
-

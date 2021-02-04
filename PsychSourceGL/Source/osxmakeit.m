@@ -29,7 +29,11 @@ fprintf('Building plugin type %i ...\n\n', mode);
 
 if mode==0
     % Build Screen:
-    % Depends: GStreamer-1.0 (actually 1.4.0+), libdc1394-2, libusb-1.0
+    % Depends: GStreamer-1.0 (actually 1.18.0+), libdc1394-2, libusb-1.0
+
+    % Must build tinyexr separately, because it needs C++ compile
+    % incompatible with the C/Obj-C compile in the main mex cmd below:
+    mex -c Common/Screen/tinyexr.cc
 
     % Build with weak linking of GStreamer and libdc1394 via -weak_library
     % flag. This means that a missing GStreamer or libdc1394 installation
@@ -60,8 +64,10 @@ if mode==0
         -I/Library/Frameworks/GStreamer.framework/Versions/Current/lib/glib-2.0/include -I/usr/local/include ...
         -ICommon/Base -ICommon/Screen -IOSX/Base -IOSX/Screen -IOSX/Fonts -IOSX/EthernetAddress ...
          "OSX/Screen/*.c" "Common/Screen/*.c" "OSX/Base/*.c" "OSX/Fonts/*FontGlue*.c" "OSX/Fonts/FontInfo.c" "OSX/EthernetAddress/*.c" "Common/Base/*.c" ...
+         tinyexr.o ...
         -L/usr/local/lib
 
+    delete tinyexr.o;
     movefile(['../Projects/MacOSX/build/Screen.' mexext], [PsychtoolboxRoot 'PsychBasic/']);
 end
 
@@ -166,6 +172,18 @@ if mode==12
     % Build Gestalt:
     mex -outdir ../Projects/MacOSX/build -output Gestalt -largeArrayDims -DMEX_DOUBLE_HANDLE -DPTBMODULE_Gestalt LDFLAGS="\$LDFLAGS -framework CoreServices -framework CoreFoundation -framework CoreAudio" -ICommon/Base -IOSX/Base -IOSX/Gestalt -IOSX/OS9ToolboxFragments  "OSX/Base/*.c" "Common/Base/*.c" "OSX/Gestalt/*.c"
     unix(['mv ../Projects/MacOSX/build/Gestalt.' mexext ' ' PsychtoolboxRoot 'PsychBasic/']);
+end
+
+if mode==13
+    % Build pnet:
+    curdir = pwd;
+    cd('../../Psychtoolbox/PsychHardware/iViewXToolbox/tcp_udp_ip/')
+    try
+        mex -output pnet pnet.c -largeArrayDims -DMEX_DOUBLE_HANDLE
+        unix(['mv ./pnet.' mexext ' ' PsychtoolboxRoot 'PsychBasic/']);
+    catch
+    end
+    cd(curdir);
 end
 
 if mode==14

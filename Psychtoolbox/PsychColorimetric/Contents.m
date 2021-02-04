@@ -23,6 +23,7 @@
 %   ConeIncToDKL        - Convert from cone increments to DKL.
 %   ContrastToExcitation - Convert contrast to excitation coordinate.
 %   ContrastToIncrement - Convert contrast to incremental coordinates.
+%   ConvertRGBSourceToRGBTargetColorSpace - Convert an image from a RGB source colorspace to a RGB target colorspace.
 %   DKLToConeInc        - Convert from DKL to cone increments.
 %   DrawChromaticity -    Plot chromaticity diagram w spectrum locus (provided by Danny Garside).
 %   EffectiveTrolandsFromLum - Compute effective trolands from luminance.
@@ -39,7 +40,6 @@
 %   IsomerizationsFromAbsorbptions - Compute isomerization rate from absorption rate.
 %   LabToXYZ            - Convert from Lab to XYZ.
 %   LjgToXYZ            - Convert from OSA UCS Ljg to XYZ (10 degree).
-%   LjgToXYZFun         - Error function for LjgToXYZ numerical optimization.
 %   LumToRadiance       - Get spectral radiance from luminance and relative spectrum of source.
 %   LumToTrolands       - Convert luminance (cd/m2) to trolands.
 %   LuvToXYZ            - Convert from Luv to XYZ.
@@ -61,6 +61,7 @@
 %   PupilDiameterFromLum - Estimate pupil diameter from luminance.
 %   PsychMunsell        - Munsell renotation to xyY conversion.
 %   RetIrradianceToIsoRecSec - Convert retinal irradiance (power units) to iso. per receptor per second.
+%   RGBToXYZMatrix      - Build a 3x3 CSC matrix for converting some RGB color space to XYZ space.
 %   SampleCircle        - Sample points on a circle.
 %   SampleSphere        - Sample points on a sphere.
 %   ShiftSpectra        - Shift a spectral function along the wavelength axis.
@@ -75,7 +76,6 @@
 %   SRGBGammaCorrect    - Convert between sRGB primary coordinates and 8-bit RGB values.
 %   SRGBGammaUncorrect   - Convert between sRGB 8-bit RGB values and primary coordinates.
 %   SToWls              - Convert S wavelength sampling spec to wls format.
-%   TestLxx             - Test routine for Lab/Luv calculations.
 %   TriToMetSPD         - Compute metamer from tristimulus coordinates.
 %   WattsToRetIrradiance - Get absolute retinal irradiance (power units) from rel. spectrum and watts/area.
 %   uvTols              - Convert between CIE u'v' and a cone based (ls) chromaticity.
@@ -89,11 +89,12 @@
 %   XYZToLab            - Convert between XYZ and Lab.
 %   XYZToLjg            - Convert between XYZ (10 degree) and OSA UCS Ljg.
 %   XYZToLuv            - Convert between XYZ and Luv.
+%   XYZToRGBMatrix      - Build a 3x3 CSC matrix for converting XYZ space to some RGB color space.
 %   XYZToSRGBPrimary    - Convert between XYZ and sRGB primary coordinates.
 %   XYZTouv             - Compute uv chromaticities from XYZ.
 %   XYZTouvY            - Convert between XYZ and u'v'Y.
 %   XYZToxyY            - Convert between XYZ and xyY.
   
-% Copyright (c) 1996-2013 by David Brainard, Denis Pelli, & Mario Kleiner
+% Copyright (c) 1996-2020 by David Brainard, Denis Pelli, & Mario Kleiner
 
 
