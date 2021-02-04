@@ -46,6 +46,11 @@ if ~exist(gitPath, 'file')
     return;
 end
 
+% Enclose path with double quotes for space characters in folder names in
+if IsWin
+    gitPath = ['"' gitPath '"'];
+end
+
 % Get the git describe info of the specified directory.
 curDir = pwd;
 cd(directory);
@@ -76,7 +81,11 @@ if status == 0
     gitInfo.LastCommit = getStringLines(result);
     fclose(fid);
 end
-unix(['rm -rf ' tempFile]);
+if ~IsWin
+    unix(['rm -rf ' tempFile]);
+else
+    delete(tempFile);
+end
 cd(curDir);
 
 % get remote repository urls
