@@ -1,14 +1,20 @@
-function FlipTimingWithRTBoxPhotoDiodeTest(configFile, targetFolder, usevulkan, bpc)
-% FlipTimingWithRTBoxPhotoDiodeTest([configFile][, targetFolder][, usevulkan=0][, bpc=8])
+function FlipTimingWithRTBoxPhotoDiodeTest(configFile, targetFolder, usevulkan, bpc, useXR)
+% FlipTimingWithRTBoxPhotoDiodeTest([configFile][, targetFolder][, usevulkan=0][, bpc=8][, useXR=0])
 %
 % Test visual stimulus onset timing accuracy and visual stimulus onset
 % timestamping precision and robustness under varying loads, conditions and
 % modes of operation. This requires one of the supported external
 % measurement devices to provide the "ground truth" for true stimulus onset
-% times. Currently supported: UCST RTBox with photo-diode, VPixx Inc. DataPixx/
-% ViewPixx/ProPixx, UBW32/Bitwhacker + UCST VideoSwitcher. The script can also
-% be used without external equipment to just test stimulus onset accuracy with
-% only indirect test of timestamping.
+% times. Currently supported:
+% - UCST RTBox with its own photo-diode (p)
+% - VPixx Inc. DataPixx/ViewPixx/ProPixx (d)
+% - UBW32/Bitwhacker + UCST VideoSwitcher (b)
+% - UCST Videoswitcher + UCST RtBox or CRS Bits# emulated RtBox (v)
+% - Other TTL trigger timestamp emitting devices + UCST RtBox or CRS Bits#,
+%   e.g., the CRS-ColorCal2 used as a photo-diode. (p)
+%
+% The script can also be used without external equipment (n) to just test
+% stimulus onset accuracy with only indirect test of timestamping.
 %
 % This documentation is incomplete for now, good luck!
 %
@@ -23,13 +29,17 @@ function FlipTimingWithRTBoxPhotoDiodeTest(configFile, targetFolder, usevulkan, 
 % the users home directory is tried as target.
 %
 % 'usevulkan' If 1, try to use a Vulkan display backend instead of the
-% OpenGL display backend. See 'help PsychVulkan'.
+% OpenGL display backend. See 'help PsychVulkan' for supported hardware +
+% operating system combinations and required setup.
 %
 % 'bpc' Request a specific output framebuffer color precision. Currently
 % supported are 8 for standard 8 bpc RGBA8 framebuffer, 10 bpc for RGB10A2,
 % and 16 bpc for a RGBA16F floating point framebuffer. Defaults to 8 bpc,
 % which is the only precision that is guaranteed to be supported on all
 % operating systems, graphics cards and displays.
+%
+% 'useXR' If 1, try to test timing on a supported VR/AR/MR/XR display via
+% PsychVRHMD(). Might be fiddly and low performance, but not impossible.
 %
 % Mandatory variables in the config file, part of the struct variable 'conf':
 % ---------------------------------------------------------------------------
@@ -135,7 +145,7 @@ end
 % Initialize the 'res' result struct with it:
 res = conf;
 
-res.measurementType = input('Measure with (p)hotodiode/BNC-Trigger, (v)ideoswitcher+RtBox/Bits#, (b)itwhacker or (d)atapixx? Or don''t measure (n)? ', 's');
+res.measurementType = input('Measure with (p)hotodiode/BNC-Trigger, (v)ideoswitcher+RtBox/Bits#, (b)itwhacker, (pp)PsychPhotodiode or (d)atapixx? Or don''t measure (n)? ', 's');
 useRTbox = [];
 if strcmpi(res.measurementType, 'p')
     useRTbox = 1;
@@ -148,6 +158,9 @@ if strcmpi(res.measurementType, 'b')
 end
 if strcmpi(res.measurementType, 'd')
     useRTbox = -1;
+end
+if strcmpi(res.measurementType, 'pp')
+    useRTbox = -2;
 end
 if strcmpi(res.measurementType, 'n')
     useRTbox = -1000;
@@ -243,6 +256,10 @@ if IsLinux && (conf.VBLTimestampingMode == 1)
     conf.VBLTimestampingMode = 4;
 end
 
+if IsOSX && (conf.VBLTimestampingMode == 1)
+    conf.VBLTimestampingMode = 0;
+end
+
 %conf.VBLTimestampingMode = 3;
 %res.VBLTimestampingMode = conf.VBLTimestampingMode;
 % VBLTimestampingMode: configVBLTimestampingMode
@@ -256,13 +273,20 @@ end
 Screen('Preference', 'VBLTimestampingMode', conf.VBLTimestampingMode);
 fprintf('Enabling VBLTimestampingMode %i.\n', conf.VBLTimestampingMode);
 
-if useRTbox == 2
+if useRTbox == 2 && ~useXR
     % Switch Videoswitcher into high precision luminance + trigger mode:
     PsychVideoSwitcher('SwitchMode', res.screenId, 1);
 end
 
 try
     PsychImaging('PrepareConfiguration');
+
+    if useXR
+        hmd = PsychVRHMD('AutoSetupHMD', 'Monoscopic', 'TimingSupport TimestampingSupport');
+        if isempty(hmd)
+            error('Asked for XR/VR/AR device testing, but could not init such a device.');
+        end
+    end
 
     if usevulkan
         % Use PsychVulkan display backend instead of standard OpenGL:
@@ -289,6 +313,22 @@ try
 
     [w, winrect] = PsychImaging('OpenWindow', res.screenId, 0, [], [], [], conf.Stereo);
     res.winfo = Screen('GetWindowInfo', w);
+
+    if useRTbox == -2
+        % Setup PsychPhotodiode for timestamping:
+
+        % Prevent sound output for testing, we need the soundcard for ourselves
+        % to record photodiode electrical spikes:
+        conf.withSound = 0;
+
+        % Initialize for low-latency sound, open photodiode driver:
+        InitializePsychSound(1);
+        pdiode = PsychPhotodiode('Open');
+
+        % Perform calibration of optimal photo-diode trigger level:
+        triggerlevel = PsychPhotodiode('CalibrateTriggerLevel', pdiode, w) %#ok<NASGU,NOPRT>
+        Screen('Flip', w);
+    end
 
     % Needed for Vulkan testing on drivers without Vulkan interop, where only
     % alternation between black and white frames happens, out of our control.
@@ -334,6 +374,18 @@ try
 
     % Number of trials to perform:
     n = size(conf.waitFramesSched, 2);
+
+    if IsOSX && usevulkan
+        % Work around macOS + Vulkan/Metal scheduling flaws. 5 ifi's is the
+        % lowest we can hope to achieve with macOS 10.15.7 + MoltenVK 1.1.1
+        % + Metal as of March 2021, so play it safe with 6 as a minimum:
+        minallowed = 6;
+        minwaitFrames = min(conf.waitFramesSched);
+        if minwaitFrames < minallowed
+            minwaitFrames = minallowed - minwaitFrames;
+            conf.waitFramesSched = conf.waitFramesSched + minwaitFrames;
+        end
+    end
 
     % Init data-collection arrays for collection of n samples:
     res.rawFlipTime     = zeros(1, n);
@@ -381,7 +433,7 @@ try
     end
 
     % Hide the cursor!
-    HideCursor;
+    HideCursor(w);
 
     % Perform some initial Flip to get us in sync with retrace:
     % tvbl is the timestamp (system time in seconds) when the retrace
@@ -389,6 +441,13 @@ try
     % emulation:
     Screen('FillRect', w, 0);
     tvbl=Screen('Flip', w);
+
+    if tvbl <= 0 && IsOSX && usevulkan
+        % Work around macOS Vulkan/Metal bugs: Sporadic invalid timestamps
+        % need to be replaced with something reasonable to avoid flip
+        % failure:
+        tvbl = GetSecs;
+    end
 
     WaitSecs(1);
 
@@ -409,12 +468,12 @@ try
             % Clear receive buffers to start clean:
             PsychRTBox('Clear', rtbox);
 
-            if ~IsWin
-                % Hack: Enable async background reads to speedup box operations:
+            if ~IsWin && ~(IsOSX && usevulkan)
+                % Hack: Enable async background reads to speedup box operations on high quality systems:
                 IOPort ('ConfigureSerialport', res.boxinfo.handle, 'BlockingBackgroundRead=1 StartBackgroundRead=1');
             end
         else
-            if useRTbox ~= -1
+            if useRTbox ~= -1 && useRTbox ~= -2
                 % Open with a "debounce time" of 1.5 ifi's:
                 bwh = BitwhackerBox('Open', [], [], ifi * 1.5);
                 res.boxinfo = BitwhackerBox('Status', bwh);
@@ -427,6 +486,8 @@ try
 
                 % Clear receive buffers to start clean:
                 BitwhackerBox('Clear', bwh);
+            elseif useRTbox == -2
+                res.boxinfo = 'PsychPhotodiode measurement';
             else
                 res.boxinfo = 'Datapixx measurement';
             end
@@ -452,6 +513,10 @@ try
         % This returns a handle to the audio device:
         pahandle = PsychPortAudio('Open', [], [], 0, freq, nrchannels);
 
+        % Reduce volume to 2% of nominal, this sound is not that endearing and
+        % we want to avoid blowing out ears or speakers:
+        PsychPortAudio('Volume', pahandle, 0.02);
+
         % Fill the audio playback buffer with the audio data 'wavedata':
         PsychPortAudio('FillBuffer', pahandle, wavedata);
 
@@ -462,10 +527,17 @@ try
 
     WaitSecs(1);
 
-    % Flash screen in full intensity white:
-    if useRTbox && useRTbox ~= 2
+    if useRTbox == -2
+        % Flash subregion of screen in full intensity white and start PsychPhotodiode acquisition:
+        yshift = wh / 5 * 0;
+        Screen('FillRect', w, 255, [0 yshift ww yshift+wh/5]);
+        Screen('DrawText', w, sprintf('+ %d msecs_______', round((yshift+wh/5/2) / wh * ifi * 1000)), ww - 300, yshift+wh/5/2);
+        diodestart = PsychPhotodiode('Start', pdiode); %#ok<NASGU>
+    elseif useRTbox && useRTbox ~= 2
+        % Flash screen in full intensity white:
         Screen('FillRect', w, 255);
     else
+        % Draw VideoSwitcher horizontal trigger line:
         Screen('DrawLine', w, [255 255 255], 0, 1, 1000, 1, 5);
     end
 
@@ -526,6 +598,14 @@ try
         end
 
         res.vblFlipTime(i) = tvbl;
+
+        if tvbl <= 0 && IsOSX && usevulkan
+            % Work around macOS Vulkan/Metal bugs: Sporadic invalid timestamps
+            % need to be replaced with something reasonable to avoid flip
+            % failure:
+            tvbl = GetSecs;
+        end
+
         winfo = Screen('GetWindowInfo', w);
         res.rawFlipTime(i) = winfo.RawSwapTimeOfFlip;
         % This is flips internal timestamp of when the Swapbuffers call is
@@ -562,10 +642,41 @@ try
                     res.failFlag(i) = 0;
                     res.measuredTime(i) = mytstamp;
                 end
+
+                if (IsOSX && usevulkan) || useXR || ...
+                    (IsLinux && ~IsWayland && ~isempty(getenv('PSYCH_EXPERIMENTAL_NETWMTS')) && (Screen('Preference', 'WindowShieldingLevel') < 2000))
+                    % Current macOS 10.15.7 Metal will not give us low
+                    % enough flip latency to flip back to black within one
+                    % video refresh cycle due to system compositor design
+                    % flaws. The "double-exposure" to two frames with
+                    % trigger lines with the Videoswitcher would screw up
+                    % our data, so make sure to clear the wrong value out.
+                    % This will ofc. add even more latency - no winning
+                    % here. But at least the measurements we can get won't
+                    % be wrong:
+                    % Same problem is prone to happen on Linux/X11 with NetWM timing if
+                    % desktop compositor is intentionally enabled for testing.
+                    % Typical VR/MR/XR compositors are also too slow, so
+                    % need this handling.
+                    PsychRTBox('Clear', rtbox);
+                end
+
                 PsychRTBox('EngageLightTrigger', rtbox);
                 PsychRTBox('EngagePulseTrigger', rtbox);
             else
-                if useRTbox ~= -1
+                if useRTbox == -2
+                    % Wait for stimulus onset report by photodiode, take timestamp:
+                    tPhoto = PsychPhotodiode('WaitSignal', pdiode);
+                    if isempty(tPhoto)
+                        % Failed:
+                        res.failFlag(i) = 2;
+                        res.measuredTime(i) = nan;
+                    else
+                        % Success!
+                        res.failFlag(i) = 0;
+                        res.measuredTime(i) = tPhoto;
+                    end
+                elseif useRTbox ~= -1
                     tdeadline = GetSecs + 0.002;
                     evt = [];
                     while isempty(evt) && (GetSecs < tdeadline)
@@ -615,9 +726,12 @@ try
         end
         % fprintf('After Fillrect %f msecs.\n', 1000 * (GetSecs - tvbl));
 
-        % Flash screen in full intensity white: This code in preparation
-        % for next loop iterations Screen('Flip') call:
-        if useRTbox && useRTbox ~= 2
+        if useRTbox == -2
+            % Flash subregion of screen in full intensity white and start PsychPhotodiode acquisition:
+            Screen('FillRect', w, 255, [0 yshift ww yshift+wh/5]);
+            Screen('DrawText', w, sprintf('+ %d msecs_______', round((yshift+wh/5/2) / wh * ifi * 1000)), ww - 300, yshift+wh/5/2);
+            diodestart = PsychPhotodiode('Start', pdiode); %#ok<NASGU>
+        elseif useRTbox && useRTbox ~= 2
             Screen('FillRect', w, 255);
         else
             Screen('DrawLine', w, [255 255 255], 0, 1, 1000, 1, 5);
@@ -644,9 +758,6 @@ try
     % Shutdown realtime scheduling:
     finalprio = Priority(0) %#ok<NASGU,NOPRT>
 
-    % Show the cursor:
-    ShowCursor;
-
     % Need to perform remapping on Datapixx before Screen('CloseAll'):
     if useRTbox == -1
         % Datapixx: Remap timestamps to GetSecs time:
@@ -659,7 +770,7 @@ try
     % Close display: If we skipped/missed any presentation deadline during
     % Flip, Psychtoolbox will automatically display some warning message on the Matlab
     % console:
-    Screen('CloseAll');
+    sca;
     WaitSecs(1);
 
     if useRTbox ~= -1000
@@ -667,7 +778,7 @@ try
             PsychRTBox('Stop', rtbox);
             PsychRTBox('Clear', rtbox);
 
-            if ~IsWin
+            if ~IsWin && ~(IsOSX && usevulkan)
                 % Hack: Disable async background reads:
                 fprintf('Stopping background read op on box...\n');
                 IOPort ('ConfigureSerialport', res.boxinfo.handle, 'StopBackgroundRead');
@@ -683,16 +794,26 @@ try
             % Close connection to box:
             PsychRTBox('CloseAll');
 
-            if useRTbox == 2
-                % Switch Videoswitcher into high precision luminance + trigger mode:
+            if useRTbox == 2 && ~useXR
+                % Switch Videoswitcher into standard passthrough mode:
                 PsychVideoSwitcher('SwitchMode', res.screenId, 1);
             end
-
         else
-            if useRTbox ~= -1
+            if useRTbox == -2
+                PsychPhotodiode('Close', pdiode);
+            elseif useRTbox ~= -1
                 BitwhackerBox('Close', bwh);
             end
         end
+    end
+
+    % On macOS + Vulkan, deal with invalid timestamps returned. Replace
+    % with NaN's so they don't disturb the analysis and plots:
+    if IsOSX && usevulkan
+        validmacOS = res.vblFlipTime > 0;
+        res.vblFlipTime(~validmacOS) = nan;
+        res.onsetFlipTime(~validmacOS) = nan;
+        fprintf('Warning: Replaced %i invalid Flip timestamps on macOS Vulkan / Metal with NaN.\n', n - sum(validmacOS));
     end
 
     % Store results to filesystem before we start shutdown and plotting:
@@ -749,7 +870,7 @@ try
         figure;
     end
 
-    valids = (res.failFlag == 0);
+    valids = (res.failFlag == 0) & (res.onsetFlipTime > 0);
     fprintf('Measured samples %i [realvalid %i, corrupted %i] vs. Flip samples %i.\n', length(res.measuredTime), length(find(res.failFlag == 0)), length(find(res.failFlag == 1)), i);
     res.measuredTime = res.measuredTime(valids);
     res.onsetFlipTime = res.onsetFlipTime(valids);
@@ -763,7 +884,7 @@ try
         plot(difference);
         title('Difference dt = FlipOnset - MeasurementBOX in msecs:');
     end
-    fprintf('Avg. diff. between Flip stimulus onset time and external timestamping (flip - external [ground truth]) is %f usecs, stddev = %f usecs, range = %f usecs.\n', mean(difference) * 1000, std(difference) * 1000, range(difference) * 1000);
+    fprintf('Avg. diff. between Flip stimulus onset time and external timestamping (flip - external [ground truth]) is %f usecs, stddev = %f usecs, range = %f usecs.\n', mean(difference) * 1000, std(difference) * 1000, psychrange(difference) * 1000);
 
     % Count and output number of missed flip on VBL deadlines:
     numbermisses=0;
@@ -804,13 +925,13 @@ catch
     % This "catch" section executes in case of an error in the "try" section
     % above. Importantly, it closes the onscreen window if its open and
     % shuts down realtime-scheduling of Matlab:
-    ShowCursor;
-    Screen('CloseAll');
-
     if ~isempty(res.outFilename)
         % Store results to filesystem before we start shutdown and plotting:
         save(res.outFilename, 'res', '-V6');
     end
+
+    % Close window, restore lut's, show cursor, etc.:
+    sca;
 
     % Disable realtime-priority in case of errors.
     Priority(0);

@@ -53,7 +53,7 @@ if nargin > 0 && isscalar(cmd) && isnumeric(cmd)
         tWhen = varargin{3};
 
         if varargin{4} == 0
-            doTimestamp = 1;
+            doTimestamp = 2; % High precision system-provided scheduling/timestamping if possible.
         else
             doTimestamp = 0;
         end
@@ -97,13 +97,17 @@ if nargin > 0 && isscalar(cmd) && isnumeric(cmd)
                 Screen('Preference', 'ScreenToHead', screenId, outputMappings{screenId + 1}(1, 1), outputMappings{screenId + 1}(2, 1), 0);
             end
 
+            % predictedOnset is the last known vbl timestamp from Screen():
             predictedOnset = winfo.LastVBLTime;
-            % If predictedOnset is valid, use it. Otherwise fall back to vblTime:
-            if predictedOnset > 0
+
+            % If predictedOnset is valid and not stale, use it. Otherwise fall back to vblTime:
+            if (predictedOnset > 0) && (predictedOnset ~= vulkan{win}.LastVBLTime)
                 vblTime = predictedOnset;
             else
                 predictedOnset = vblTime;
             end
+
+            vulkan{win}.LastVBLTime = predictedOnset;
 
             % Inject vblTime and visual stimulus onset time into Screen(), for usual handling
             % and reporting back to usercode via Screen('Flip'), also current beamposition:
@@ -133,7 +137,9 @@ if nargin > 0 && isscalar(cmd) && isnumeric(cmd)
         end
 
         if vulkan{win}.needsNvidiaWa
-            system(sprintf('xrandr --screen %i --output %s --auto ; sleep 1', screenId, vulkan{win}.outputName));
+            % Reenable output at auto-selected preferred mode and old (x,y) starting location of viewport in X-Screen space:
+            syscmd = sprintf('sleep 1; xrandr --screen %i --output %s --auto --pos %ix%i ; sleep 1', screenId, vulkan{win}.outputName, ceil(vulkan{win}.windowRect(1)), ceil(vulkan{win}.windowRect(2)));
+            system(syscmd);
         end
 
         % Do we need a complete driver shutdown to work around Mesa < 20.1.2 bugs?
@@ -144,6 +150,69 @@ if nargin > 0 && isscalar(cmd) && isnumeric(cmd)
 
         return;
     end
+
+    % Special present code for macOS, to work around Apple's broken Metal
+    % implementation and other macOS bugs:
+    if cmd == 2
+        % Execute flip operation via a Vulkan Present operation at the appropriately
+        % scheduled requested visual stimulus onset time:
+        win = varargin{1};
+        vwin = varargin{2};
+        tWhen = varargin{3};
+
+        if varargin{4} == 0
+            doTimestamp = 2; % High precision system-provided scheduling/timestamping if possible.
+        else
+            doTimestamp = 0;
+        end
+
+        % Present and maybe get an ok precision and not too unreliable timestamp from Vulkan driver:
+        predictedOnset = PsychVulkanCore('Present', vwin, tWhen, doTimestamp);
+
+        % Get a second opinion on onset time from Screen's VBLANK timestamping:
+        winfo = Screen('GetWindowInfo', win, 7);
+
+        % Likely valid vblTime returned from Screen()?
+        if (winfo.VBLEndline > 0) && (winfo.LastVBLTime > 0)
+            % Yes. Assign:
+            vblTime = winfo.LastVBLTime;
+        else
+            % No. Fallback to GetSecs as a noisy last resort:
+            vblTime = GetSecs;
+        end
+
+        % If predictedOnset is valid, use it. Otherwise fall back to vblTime:
+        if predictedOnset > 0
+            % Valid timestamp from Vulkan? Validate a bit and warn if not:
+            if (verbosity > 4) || ((verbosity > 1) && (abs(predictedOnset - vblTime) > 0.001))
+                fprintf('PsychVulkan-DEBUG: Delta between Vulkan and reference timestamps is %f usecs.\n', 1e6 * (predictedOnset - vblTime));
+            end
+
+            vblTime = predictedOnset;
+        elseif predictedOnset == 0
+            % Vulkan timestamping returned bogus timestamp zero, but no diagnosed failure.
+            % Use what we got from Screen() or GetSecs():
+            predictedOnset = vblTime;
+
+            if verbosity > 1
+                fprintf('PsychVulkan-DEBUG: Vulkan timestamping failed. Falling back to reference timestamp %f secs. Timing or visual stimulation might be broken.\n', vblTime);
+            end
+        else
+            % Error code timestamp -1 returned. We can't recover in a
+            % meaningful way from that, just pass it through...
+            vblTime = -1;
+
+            if verbosity > 1
+                fprintf('PsychVulkan-DEBUG: Vulkan timestamping failed completely. Returning invalid timestamp -1.\n');
+            end
+        end
+
+        % Inject vblTime and visual stimulus onset time into Screen(), for usual handling
+        % and reporting back to usercode via Screen('Flip'), also current beamposition:
+        Screen('Hookfunction', win, 'SetOneshotFlipResults', '', vblTime, predictedOnset, [], winfo.Beamposition);
+
+        return;
+    end % Of macOS special code.
 end % Of fast-path dispatch.
 
 % Slow path dispatch:
@@ -209,7 +278,8 @@ if strcmpi(cmd, 'Supported')
     % Init supported flag via one-time probe:
     if isempty(supported)
         try
-            if exist('PsychVulkanCore', 'file') && PsychVulkanCore('GetCount') > 0
+            if exist('PsychVulkanCore', 'file') && (PsychVulkanCore('GetCount') > 0) && ...
+               (~IsOSX || IsMinimumOSXVersion(10,15,4)) % macOS 10.15.4 is the bare minimum needed.
                 supported = 1;
             else
                 supported = 0;
@@ -235,7 +305,7 @@ if strcmpi(cmd, 'OpenWindowSetup')
     outputName = varargin{1};
     screenId = varargin{2};
     winRect = varargin{3};
-    ovrfbOverrideRect = varargin{4}; %#ok<NASGU>
+    ovrfbOverrideRect = varargin{4};
     ovrSpecialFlags = varargin{5};
     if isempty(ovrSpecialFlags)
         ovrSpecialFlags = 0;
@@ -379,8 +449,10 @@ if strcmpi(cmd, 'OpenWindowSetup')
         Screen('Preference', 'ScreenToHead', screenId, outputMappings{screenId + 1}(1, outputIndex + 1), outputMappings{screenId + 1}(2, outputIndex + 1), 0);
     end
 
-    % These always have to match:
-    ovrfbOverrideRect = winRect;
+    if ~IsOSX
+        % These always have to match:
+        ovrfbOverrideRect = winRect;
+    end
 
     % Set ovrSpecialFlags override settings to mark the onscreen window as not
     % important for visual stimulation, because the actual window / OpenGL windowing
@@ -459,10 +531,24 @@ if strcmpi(cmd, 'PerformPostWindowOpenSetup')
     winfo = Screen('GetWindowInfo', win);
     screenId = Screen('WindowScreenNumber', win);
     refreshHz = Screen('Framerate', screenId);
+    if refreshHz == 0
+        % macOS reports refresh rate of 0 on Mac builtin panels - the idiocy...
+        refreshHz = 60;
+    end
+
     devs = PsychVulkanCore('GetDevices');
 
     % Restore rank 0 output setting in Screen:
     Screen('Preference', 'ScreenToHead', screenId, outputMappings{screenId + 1}(1, 1), outputMappings{screenId + 1}(2, 1), 0);
+
+    % NVidia gpu under Linux/X11 with NVIDIA proprietary driver? And onscreen window fills complete target X-Screen?
+    % Or this is a single-output display NVidia Optimus PRIME render offload setup, where NVIDIA's RandR output leasing does not work?
+    if IsLinux && ~IsWayland && ~isempty(strfind(winfo.GLVendor, 'NVIDIA')) && ...
+       (isequal(Screen('GlobalRect', win), Screen('GlobalRect', screenId)) || ~isempty(getenv('__NV_PRIME_RENDER_OFFLOAD')))
+        % Do not use direct display mode via RandR output leasing. This window can
+        % be pageflipped under X11 as well, without need for Vulkan direct display:
+        isFullscreen = 0;
+    end
 
     % AMD gpu under MS-Windows?
     if IsWin && ~isempty(strfind(winfo.GLVendor, 'ATI'))
@@ -471,10 +557,17 @@ if strcmpi(cmd, 'PerformPostWindowOpenSetup')
         % causes massive malfunctions and a black screen display only,
         % e.g., the Radeon RX 460 (Polaris, pci device id 0x67EF).
         % Check gpu against badFSEIds list and enable a workaround if it is
-        % one of the bad gpu's:
+        % one of the bad gpu's.
+        % Additionally driver version raw >= 8388767 aka 20.11.2+ seems to have
+        % generally broken fullscreen-exclusive mode, as verified by Dale Stolizka,
+        % and by kleinerm with version 21.11.2 from one year later - November 2021!
+        % This on the Windows 10 21H1 edition. So we fall back to non-fs-exclusive
+        % mode and accept broken timing and potentially impaired HDR - what choice do
+        % we have?!
         badFSEIds = hex2dec({'67EF'});
         for i=1:length(devs)
-            if (devs(i).VendorId == 4098) && strcmp(winfo.GLRenderer, devs(i).GpuName) && ismember(devs(i).DeviceId, badFSEIds)
+            if (devs(i).VendorId == 4098) && strcmp(winfo.GLRenderer, devs(i).GpuName) && ...
+               (ismember(devs(i).DeviceId, badFSEIds) || (devs(i).DriverVersionRaw >= 8388767))
                 % Got a bad one! Disable fullscreen-exclusive mode for fullscreen windows:
                 flags = mor(flags, 2);
                 fprintf('PsychVulkan-INFO: AMD gpu [%s] with buggy Vulkan driver for fullscreen mode detected! Enabling workaround, timing reliability may suffer.\n', devs(i).GpuName);
@@ -482,21 +575,53 @@ if strcmpi(cmd, 'PerformPostWindowOpenSetup')
         end
     end
 
-    if isempty(strfind(glGetString(GL.EXTENSIONS), 'GL_EXT_memory_object')) %#ok<STREMP>
-        flags = mor(flags, 1);
-        noInterop = 1;
+    if isempty(strfind(glGetString(GL.EXTENSIONS), 'GL_EXT_memory_object')) || isempty(strfind(glGetString(GL.EXTENSIONS), 'GL_EXT_direct_state_access')) %#ok<STREMP>
         % If no specific Vulkan gpu was requested, select the first non-AMD/NVidia
-        % gpuIndex (as we know AMD/NVidia can't be it - they fully support interop).
-        % Default to gpuIndex 1 in case this filtering fails to find an elegible gpu:
+        % gpuIndex on Linux or Windows: AMD and NVidia OpenGL fully support
+        % OpenGL interop, so if we end here then the render-gpu can not be an
+        % AMD or NVidia, ergo the display gpu should not be one.
+        %
+        % Also ignore MoltenVK (DriverId == 14) on macOS, because Apple's
+        % OpenGL does not support this extension at all, so we can't use
+        % this as selection criterion. Instead we just choose the first
+        % enumerated gpu on macOS: On a single-gpu machine that is the
+        % obviously correct choice. On a dual-gpu MacBookPro, the 1st gpu
+        % seems to be the discrete high-performance gpu, which matches
+        % Screen()'s choice of gpu as OpenGL renderer, so again gpuIndex 1
+        % would give us a match.
+        %
+        % Default also to gpuIndex 1 in case this filtering fails to find an eligible gpu:
         if isempty(gpuIndex) || gpuIndex == 0
             gpuIndex = 1;
             for i=1:length(devs)
-                if ~ismember(devs(i).DriverId, [1, 2, 3, 4])
+                if ~ismember(devs(i).DriverId, [1, 2, 3, 4, 14])
                     gpuIndex = devs(i).DeviceIndex;
                 end
             end
         end
-        fprintf('PsychVulkan-INFO: OpenGL implementation does not support OpenGL-Vulkan interop! Enabling basic diagnostic mode on gpu %i.\n', gpuIndex);
+
+        if IsOSX
+            noInterop = 0;
+
+            % Disable Direct-To-Display mode, it is buggy as hell, at least
+            % as tested on macOS 10.15.7 and 12.6 with AMD Radeon Pro 560.
+            % Not that it works much better with this hack, it is only a
+            % bit better. At the same time, this hack supposedly adds one
+            % frame of extra latency, but our measurements show that even
+            % without it, there is one frame of extra latency, contrary to
+            % what the docs wrt. Direct-to-Display mode say.
+            % On macOS 13.3.1, it is still broken, but different: The one
+            % frame latency is gone, but now stimulus onset scheduling is
+            % broken whenever a flip is more than 2 frames in the future!
+            %
+            % Broken stuff all around on the iToys operating system:
+            flags = mor(flags, 2);
+        else
+            flags = mor(flags, 1);
+            noInterop = 1;
+
+            fprintf('PsychVulkan-INFO: OpenGL implementation does not support OpenGL-Vulkan interop! Enabling basic diagnostic mode on gpu %i.\n', gpuIndex);
+        end
     else
         noInterop = 0;
     end
@@ -518,14 +643,6 @@ if strcmpi(cmd, 'PerformPostWindowOpenSetup')
                     if strcmp(output.name, outputName)
                         % This output i is the right output.
                         usedOutput = i;
-
-                        % Position our onscreen window accordingly:
-                        winRect = OffsetRect([0, 0, output.width, output.height], output.xStart, output.yStart);
-                        if verbosity >= 3
-                            fprintf('PsychVulkan-INFO: Positioning onscreen window at rect [%i, %i, %i, %i] to align with display output %i [%s] of screen %i.\n', ...
-                                    winRect(1), winRect(2), winRect(3), winRect(4), i, outputName, screenId);
-                        end
-
                         break;
                     else
                         output = [];
@@ -551,6 +668,13 @@ if strcmpi(cmd, 'PerformPostWindowOpenSetup')
             outputHandle = uint64(output.outputHandle);
             outputName = output.name;
             refreshHz = output.hz;
+
+            % Position our onscreen window accordingly:
+            windowRect = OffsetRect([0, 0, output.width, output.height], output.xStart, output.yStart);
+            if verbosity >= 3
+                fprintf('PsychVulkan-INFO: Positioning onscreen window at rect [%i, %i, %i, %i] to align with display output %i [%s] of screen %i.\n', ...
+                        windowRect(1), windowRect(2), windowRect(3), windowRect(4), usedOutput, outputName, screenId);
+            end
 
             % More than 8 bpc output precision desired?
             % Note that colorPrecision == 0 and hdrMode > 0 gets handled automatically
@@ -585,8 +709,15 @@ if strcmpi(cmd, 'PerformPostWindowOpenSetup')
             % TODO XXX: Should we calculate refreshHz per output or from FlipInterval instead?
         end
     else
-        % On Windows, outputHandle is meaningless atm.:
-        outputHandle = uint64(0);
+        if IsOSX
+            % On macOS we need the CAMetalLayer backing the onscreen window in
+            % kPsychExternalDisplayMethod mode. It is stored in SysWindowInteropHandle:
+            outputHandle = uint64(winfo.SysWindowInteropHandle);
+        else
+            % On Windows, outputHandle is meaningless atm.:
+            outputHandle = uint64(winfo.SysWindowHandle);
+        end
+
         if isFullscreen
             % Mark output 0 (the only possible output for a screenId on
             % non-Linux/X11) of screenId as used:
@@ -611,7 +742,7 @@ if strcmpi(cmd, 'PerformPostWindowOpenSetup')
     end
 
     % Is the special fullscreen direct display mode workaround for NVidia blobs on Linux needed?
-    needsNvidiaWa = IsLinux && isFullscreen && strcmp(winfo.DisplayCoreId, 'NVidia') && ~isempty(strfind(winfo.GLVendor, 'NVIDIA'));
+    needsNvidiaWa = IsLinux && isFullscreen && strcmp(winfo.DisplayCoreId, 'NVidia') && (~isempty(strfind(winfo.GLVendor, 'NVIDIA')) || noInterop);
 
     % Try to open the Vulkan window and setup Vulkan side of interop:
     try
@@ -655,6 +786,15 @@ if strcmpi(cmd, 'PerformPostWindowOpenSetup')
             if verbosity >= 3
                 fprintf('PsychVulkan-INFO: Loaded identity gamma table into output for HDR.\n');
             end
+
+            % HDR mode 1 aka HDR-10 on MS-Windows, in fullscreen, but fullscreen
+            % exclusive mode disabled by flags?
+            if IsWin && isFullscreen && (hdrMode == 1) && bitand(flags, 2) && (colorPrecision < 2)
+                % Yes. The only reliably supported HDR-10 mode across gpu
+                % vendors is fp16 scRGB. Enforce colorPrecision 2 == fp16,
+                % which will enforce fp16 scRGB HDR under Windows DWM:
+                colorPrecision = 2;
+            end
         end
 
         % Open the Vulkan window:
@@ -663,7 +803,7 @@ if strcmpi(cmd, 'PerformPostWindowOpenSetup')
         % No interop, or semaphores unsupported?
         if noInterop || isempty(strfind(glGetString(GL.EXTENSIONS), 'GL_EXT_semaphore')) %#ok<STREMP>
             if ~noInterop
-                fprintf('PsychVulkan-INFO: OpenGL implementation does not support OpenGL-Vulkan interop semaphores! Enabling operation without semaphores on gpu %i.\n', gpuIndex);
+                fprintf('PsychVulkan-INFO: OpenGL implementation does not support OpenGL-Vulkan interop semaphores. Enabling operation without semaphores on gpu %i.\n', gpuIndex);
             else
                 fprintf('PsychVulkan-INFO: Interop disabled! Enabling operation without semaphores on gpu %i.\n', gpuIndex);
             end
@@ -679,7 +819,7 @@ if strcmpi(cmd, 'PerformPostWindowOpenSetup')
     catch
         % Failed! Reenable RandR output if this was a failed attempt at output leasing on Linux + NVidia:
         if needsNvidiaWa
-            system(sprintf('xrandr --screen %i --output %s --auto ; sleep 1', screenId, outputName));
+            system(sprintf('sleep 1; xrandr --screen %i --output %s --auto --pos %ix%i ; sleep 1', screenId, outputName, ceil(windowRect(1)), ceil(windowRect(2))));
         end
 
         % Close all windows:
@@ -739,7 +879,12 @@ if strcmpi(cmd, 'PerformPostWindowOpenSetup')
 
     % Set it up:
     if ~noInterop
-        Screen('Hookfunction', win, 'ImportDisplayBufferInteropMemory', [], 0, interopObjectHandle, allocationSize, internalFormat, tilingMode, memoryOffset, width, height, renderCompleteSemaphore);
+        if IsOSX
+            oldtex = Screen('Hookfunction', win, 'SetDisplayBufferTextures', [], double(interopObjectHandle), [], GL.TEXTURE_RECTANGLE, internalFormat, 0, width, height);
+            glDeleteTextures(1, oldtex); % Get rid of now unused old texture.
+        else
+            Screen('Hookfunction', win, 'ImportDisplayBufferInteropMemory', [], 0, interopObjectHandle, allocationSize, internalFormat, tilingMode, memoryOffset, width, height, renderCompleteSemaphore);
+        end
     end
 
     vulkan{win}.valid = 1;
@@ -753,20 +898,35 @@ if strcmpi(cmd, 'PerformPostWindowOpenSetup')
     vulkan{win}.outputHandle = outputHandle;
     vulkan{win}.outputName = outputName;
     vulkan{win}.needsNvidiaWa = needsNvidiaWa;
+    vulkan{win}.LastVBLTime = nan;
 
     % Find out which Vulkan device was chosen to drive this window:
     hdrInfo = PsychVulkanCore('GetHDRProperties', vwin);
     gpuIndex = hdrInfo.GPUIndex;
 
-    % Mesa opens-source AMD radv or Intel anvil driver of Mesa version < 20.1.2 in use for fullscreen direct display mode?
-    if isFullscreen && ismember(devs(gpuIndex).DriverId, [3, 6]) && (devs(gpuIndex).DriverVersionRaw < bitshift (20, 22) + bitshift (1, 12) + 2)
-        % These pre-20.1.2 drivers have a bug where in direct display mode they won't release the
-        % display unless the complete Vulkan instance is destroyed. Iow. we need a full driver
-        % shutdown:
+    % Mesa open-source Vulkan drivers of Mesa version < 22.2.4 in use for fullscreen direct display mode and
+    % target video output windowRect doesn't have top-left corner at (0,0)?
+    if isFullscreen && any(windowRect(1:2)) && ismember(devs(gpuIndex).DriverId, [3, 6, 13, 18:20, 22:23]) && ...
+       (devs(gpuIndex).DriverVersionRaw < bitshift (22, 22) + bitshift (2, 12) + 4)
+        % Yes. At least as of Mesa version 22.3-devel and earlier (tested Mesa 22.3-git, 22.0.5, 21.2.6),
+        % these drivers have an internal caching bug in their WSI, where in direct display mode they will
+        % fail on any run after the first run in a session (vkQueuePresent() fails with VK_ERROR_SURFACE_LOST),
+        % unless either the fullscreen output window was covering a video output with viewport (x,y) starting
+        % at X-Screen position (0,0), ie. viewport top-left == X-Screen top-left. This is due to some erroneous
+        % caching of internal per DRM/KMS output (wsi_display_connector->active) state, retaining stale settings
+        % from the first session, which leads to omitting a required drmModeSetCrtc() full modeset on first
+        % present -> Boom!
+        %
+        % The bug has been diagnosed and fixed by myself and will be part of Mesa 22.2.4 and later, but won't
+        % get backported further, so we need a workaround for at least Debian 11, Ubuntu 20.04-LTS
+        % and Ubuntu 22.04.1-LTS, Ubuntu 22.10 and possibly also Ubuntu 22.04.2-LTS.
+        %
+        % The workaround is a full driver shutdown -> VKInstance destruction -> Stale cache reset -> Ok:
         vulkan{win}.needsMesaDDMWa = 1;
         fprintf('PsychVulkan-WARNING: Need to enable full-driver-shutdown workaround for buggy Mesa Vulkan driver!\n');
-        fprintf('PsychVulkan-WARNING: This may fail badly on multi-window configurations and is a bad hack!\n');
-        fprintf('PsychVulkan-WARNING: Please upgrade to Mesa version 20.1.2 or later to get rid of this hack.\n');
+        fprintf('PsychVulkan-WARNING: This could cause problems on multi-window Vulkan configurations and is a bad hack!\n');
+        fprintf('PsychVulkan-WARNING: Windows placed in the origin (0,0) of their respective X-Screen are not affected.\n');
+        fprintf('PsychVulkan-WARNING: Please upgrade to Mesa version 22.2.4 or later to get rid of this hack.\n');
     else
         vulkan{win}.needsMesaDDMWa = 0;
     end
@@ -783,12 +943,28 @@ if strcmpi(cmd, 'PerformPostWindowOpenSetup')
     Screen('Hookfunction', win, 'SetOneshotFlipFlags', '', kPsychDontAutoResetOneshotFlags + kPsychSkipWaitForFlipOnce + kPsychSkipSwapForFlipOnce + kPsychSkipTimestampingForFlipOnce);
 
     if ~noglfinish
-        % Old method as fallback: Use glFinish to sync Vulkan with OpenGL:
-        Screen('Hookfunction', win, 'AppendMFunction', 'LeftFinalizerBlitChain', 'Vulkan Mono commit operation', 'moglcore(''glFinish'');');
+        % Old method as fallback: Use glFinish to sync Vulkan with OpenGL, except on macOS where glFlush seems enough:
+        if IsOSX
+            Screen('Hookfunction', win, 'AppendMFunction', 'LeftFinalizerBlitChain', 'Vulkan Mono commit operation', 'moglcore(''glFlush'');');
+        else
+            Screen('Hookfunction', win, 'AppendMFunction', 'LeftFinalizerBlitChain', 'Vulkan Mono commit operation', 'moglcore(''glFinish'');');
+        end
         Screen('Hookfunction', win, 'Enable', 'LeftFinalizerBlitChain');
     end
 
-    cmdString = sprintf('PsychVulkan(0, %i, %i, IMAGINGPIPE_FLIPTWHEN, IMAGINGPIPE_FLIPVBLSYNCLEVEL);', win, vwin);
+    if IsOSX
+        % Special present path for Apples broken macOS:
+        if ~vulkan{win}.SupportsTiming
+            % We are screwed on macOS:
+            sca;
+            error('PsychVulkan-ERROR: macOS Vulkan does not provide builtin timing support. Game over!');
+        end
+
+        cmdString = sprintf('PsychVulkan(2, %i, %i, IMAGINGPIPE_FLIPTWHEN, IMAGINGPIPE_FLIPVBLSYNCLEVEL);', win, vwin);
+    else
+        % Well working operating systems:
+        cmdString = sprintf('PsychVulkan(0, %i, %i, IMAGINGPIPE_FLIPTWHEN, IMAGINGPIPE_FLIPVBLSYNCLEVEL);', win, vwin);
+    end
     Screen('Hookfunction', win, 'AppendMFunction', 'PreSwapbuffersOperations', 'Vulkan Present operation', cmdString);
     Screen('Hookfunction', win, 'Enable', 'PreSwapbuffersOperations');
 

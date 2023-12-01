@@ -75,6 +75,9 @@ function PsychtoolboxPostInstallRoutine(isUpdate, flavor)
 % 04/07/2018 Remove PsychtoolboxRegistration for now. (MK)
 % 07/27/2019 64-Bit Octave 5.1.0 support for Windows and OSX, no Octave-4 support anymore. (MK)
 % 10/29/2020 64-Bit Octave 5.2.0 support for Windows and OSX. (MK)
+% ??/??/2021 64-Bit Octave 6.1.0 support for Windows and OSX. (MK)
+% 02/05/2023 64-Bit Octave 7.3.0 support for Windows and OSX. (MK)
+% 03/12/2023 64-Bit Octave 8.1.0 support for OSX. (MK)
 
 fprintf('\n\nRunning post-install routine...\n\n');
 
@@ -370,6 +373,22 @@ if IsOctave
             rmpath([PsychtoolboxRoot 'PsychBasic' filesep 'Octave6OSXFiles64']);
         end
 
+        if exist([PsychtoolboxRoot 'PsychBasic' filesep 'Octave7WindowsFiles64'], 'dir')
+            rmpath([PsychtoolboxRoot 'PsychBasic' filesep 'Octave7WindowsFiles64']);
+        end
+
+        if exist([PsychtoolboxRoot 'PsychBasic' filesep 'Octave7OSXFiles64'], 'dir')
+            rmpath([PsychtoolboxRoot 'PsychBasic' filesep 'Octave7OSXFiles64']);
+        end
+
+        if exist([PsychtoolboxRoot 'PsychBasic' filesep 'Octave8WindowsFiles64'], 'dir')
+            rmpath([PsychtoolboxRoot 'PsychBasic' filesep 'Octave8WindowsFiles64']);
+        end
+
+        if exist([PsychtoolboxRoot 'PsychBasic' filesep 'Octave8OSXFiles64'], 'dir')
+            rmpath([PsychtoolboxRoot 'PsychBasic' filesep 'Octave8OSXFiles64']);
+        end
+
         % Encode prefix and Octave major version of proper folder:
         octavev = sscanf(version, '%i.%i.%i');
         octavemajorv = octavev(1);
@@ -380,21 +399,33 @@ if IsOctave
 
         % Octave on Linux with ARM processor, e.g., RaspberryPi?
         if IsLinux && IsARM
-            % 32-Bit ARM can currently share mex files from Octave 3.8 to at least 5.x,
+            % 32-Bit ARM can currently share mex files from Octave 3.8 to at least 6.2,
             % so treat it as Octave 3.8, and all versions will share the same folder:
             octavemajorv = 3;
             octaveminorv = 8;
         end
 
         if ((octavemajorv >= 5) || (octavemajorv == 4 && octaveminorv >= 4)) && IsLinux
-            % Octave-4.4 and Octave-5 can share the same mex files in the Octave-5 folder on Linux:
+            % Octave-4.4, 5.x, 6.x, 7.x and Octave-8.x can share the same mex files in the Octave-5 folder on Linux:
             rdir = [PsychtoolboxRoot 'PsychBasic' filesep 'Octave5'];
         elseif ismember(octavemajorv, [3,4]) && IsLinux
             % Octave-3 and Octave-4.0/4.2 can share the same mex files in the Octave-3 folder on Linux:
             rdir = [PsychtoolboxRoot 'PsychBasic' filesep 'Octave3'];
+            if ~IsARM
+                % Only warn on non-ARM ie. not RaspberryPi:
+                fprintf('\nOctave versions < 4.4 are no longer supported on Linux. This will likely fail!\n');
+                fprintf('Upgrade to Ubuntu 22.04-LTS or an equivalent modern Linux distribution.\n');
+                fprintf('Press any key to confirm you read and understand this message.\n');
+                pause;
+            end
+        elseif ismember(octavemajorv, [6,7,8]) && IsOSX
+            % Octave 6 - 8 can share the same mex files built against Octave 8:
+            rdir = [PsychtoolboxRoot 'PsychBasic' filesep 'Octave8'];
         else
             % Everything else (aka other OS'es) goes by Octave major version:
-            rdir = [PsychtoolboxRoot 'PsychBasic' filesep 'Octave' num2str(octavemajorv)];
+            %rdir = [PsychtoolboxRoot 'PsychBasic' filesep 'Octave' num2str(octavemajorv)];
+            % Override - Always use the Octave8WindowsFiles64 folder, although for actual Octave7 mex files:
+            rdir = [PsychtoolboxRoot 'PsychBasic' filesep 'Octave8'];
         end
 
         % Add proper OS dependent postfix:
@@ -423,6 +454,11 @@ if IsOctave
         fprintf(' %s ...\n', rdir);
         addpath(rdir);
 
+        % No Wayland specific subfolder on path by default:
+        if exist([rdir filesep 'Wayland'], 'dir')
+            rmpath([rdir filesep 'Wayland']);
+        end
+
         rc = savepath;
     catch
         rc = 2;
@@ -439,38 +475,45 @@ if IsOctave
         fprintf('=====================================================================\n\n');
     end
 
-    if (~IsLinux && (octavemajorv ~= 6 || octaveminorv ~= 1)) || ...
-        (IsLinux && ((octavemajorv < 3) || (octavemajorv == 3 && octaveminorv < 8) || (octavemajorv > 5)))
-        fprintf('\n\n==============================================================================================\n');
+    if  (IsOSX && (~ismember(octavemajorv, [6,7,8]))) || ...
+        (IsWin && (octavemajorv ~= 7 || ~ismember(octaveminorv, [3]))) || ...
+        (IsLinux && ((octavemajorv < 4 && ~IsARM) || (octavemajorv == 4 && octaveminorv < 4) || (octavemajorv > 8)))
+        fprintf('\n\n===============================================================================================\n');
         fprintf('WARNING: Your version %s of Octave is incompatible with this release. We strongly recommend\n', version);
         if IsLinux
-            % On Linux everything from 3.8 to 5 is fine:
-            fprintf('WARNING: using the latest stable version of the Octave 3.8, 4.0, 4.2, 4.4, 5.1 or 5.2 series.\n');
-            fprintf('WARNING: You can get Psychtoolbox for more recent versions of Octave from NeuroDebian.\n');
+            % On Linux everything from 4.4 to at least 7.x and presumably 8.x is fine:
+            fprintf('WARNING: using the latest stable version of the Octave 4.4, 5.x, 6.x, 7.x or maybe 8.x series.\n');
+            fprintf('WARNING: You can get Psychtoolbox for other, or more recent, versions of Octave from NeuroDebian.\n');
+        elseif IsOSX
+            fprintf('WARNING: only using Octave 6 or Octave 7 or Octave 8 with this version of Psychtoolbox.\n');
         else
-            % On Windows/OSX we only care about 6.1 atm:
-            fprintf('WARNING: only using Octave 6.1 with this version of Psychtoolbox.\n');
+            % On Windows we only care about 7.3 atm:
+            fprintf('WARNING: only using Octave 7.3 with this version of Psychtoolbox.\n');
         end
         fprintf('WARNING: Stuff may not work at all or only suboptimal with other versions and we\n');
         fprintf('WARNING: don''t provide any support for such old versions.\n');
         fprintf('\nPress any key to continue with setup.\n');
-        fprintf('==============================================================================================\n\n');
+        fprintf('===============================================================================================\n\n');
         pause;
     end
 
     if IsOSX
-        % Need to copy the Octave runtime libraries somewhere our mex files can find them. The only low-maintenance
+        % Need to symlink the Octave runtime libraries somewhere our mex files can find them. The only low-maintenance
         % way of dealing with this mess of custom library pathes per octave version, revision and packaging format.
-        % Preferred location is the folder with our mex files - found by rpath = @loader_path
-        if ~copyfile([GetOctlibDir filesep 'liboctinterp.8.dylib'], [rdir filesep], 'f') || ...
-           ~copyfile([GetOctlibDir filesep 'liboctave.8.dylib'], [rdir filesep], 'f')
-            % Copy into our mex files folder failed. A second location where the linker will search is the
+        % Preferred location is the folder with our mex files - found by the @rpath = @loader_path encoded in our mex files.
+        tdir = PsychHomeDir('lib');
+        dummy = unlink([tdir 'liboctinterp.dylib']);
+        dummy = unlink([tdir 'liboctave.dylib']);
+        dummy = unlink([rdir filesep 'liboctinterp.dylib']);
+        dummy = unlink([rdir filesep 'liboctave.dylib']);
+        if symlink([GetOctlibDir filesep 'liboctinterp.dylib'], [rdir filesep 'liboctinterp.dylib']) || ...
+           symlink([GetOctlibDir filesep 'liboctave.dylib'], [rdir filesep 'liboctave.dylib'])
+            % Symlink from our mex files folder failed. A second location where the linker will search is the
             % $HOME/lib directory of the current user, so try that as target location:
-            tdir = PsychHomeDir('lib');
-            fprintf('\n\nFailed to copy Octave runtime libraries to mex file folder [%s].\nRetrying in users private lib dir: %s ...\n', rdir, tdir);
-            if ~copyfile([GetOctlibDir filesep 'liboctinterp.8.dylib'], tdir, 'f') || ...
-               ~copyfile([GetOctlibDir filesep 'liboctave.8.dylib'], tdir, 'f')
-                fprintf('\nFailed to copy runtime libs to [%s] as well :(.\n', tdir);
+            fprintf('\n\nFailed to symlink Octave runtime libraries to mex file folder [%s].\nRetrying in users private lib dir: %s ...\n', rdir, tdir);
+            if symlink([GetOctlibDir filesep 'liboctinterp.dylib'], [tdir 'liboctinterp.dylib']) || ...
+               symlink([GetOctlibDir filesep 'liboctave.dylib'], [tdir 'liboctave.dylib'])
+                fprintf('\nFailed to symlink runtime libs to [%s] as well :(.\n', tdir);
                 fprintf('Our mex files will likely not work this way. Maybe the directories lack file write permissions?\n');
                 fprintf('\n\n\nA last workaround would be to restart octave from a terminal via this line:\n\nexport DYLD_LIBRARY_PATH=%s ; octave\n\n\n', GetOctlibDir);
             end
@@ -494,13 +537,12 @@ if IsOctave
         % Failed! Either screwed setup of path or missing runtime
         % libraries.
         fprintf('ERROR: WaitSecs-MEX does not work, most likely other MEX files will not work either.\n');
-        if ismember(octavemajorv, [3,4,5,6]) && IsLinux
+        if ismember(octavemajorv, [3,4]) && IsLinux
             fprintf('ERROR: Make sure to have the ''liboctave-dev'' package installed, otherwise symlinks\n');
             fprintf('ERROR: from liboctinterp.so to the liboctinterp library of your Octave installation\n');
             fprintf('ERROR: might by missing, causing our mex files to fail to load with linker errors.\n');
         end
-        fprintf('ERROR: One reason might be that your version %s of Octave is incompatible. We recommend\n', version);
-        fprintf('ERROR: use of the latest stable version of Octave-6 as announced on the www.octave.org website.\n');
+        fprintf('ERROR: One reason might be that your version %s of Octave is incompatible.\n', version);
         fprintf('ERROR: Another conceivable reason would be missing or incompatible required system libraries on your system.\n\n');
         fprintf('ERROR: After fixing the problem, restart this installation/update routine.\n\n');
         fprintf('\n\nInstallation aborted. Fix the reported problem and retry.\n\n');
@@ -525,19 +567,19 @@ if IsWin && ~IsOctave
         % Remove DLL folders from path:
         rmpath([PsychtoolboxRoot 'PsychBasic\MatlabWindowsFilesR2007a\']);
 
-        % Is this a Release2007a (Version 7.4.0) or later Matlab?
-        if ~exist('verLessThan') || verLessThan('matlab', '7.4.0') %#ok<EXIST>
-            % This is a pre-R2007a Matlab: No longer supported by V 3.0.10+
-            fprintf('Matlab release prior to R2007a detected. This version is no longer\n');
-            fprintf('supported by Psychtoolbox 3.0.10 and later. Aborted.');
+        % Is this a Release2014b (Version 8.4.0) or later Matlab?
+        if ~exist('verLessThan') || verLessThan('matlab', '8.4.0') %#ok<EXIST>
+            % This is a pre-R2014b Matlab: No longer supported by V 3.0.18+
+            fprintf('Matlab release prior to R2014b detected. This version is no longer\n');
+            fprintf('supported by Psychtoolbox 3.0.18 and later. Aborted.');
             fprintf('\n\nInstallation aborted. Fix the reported problem and retry.\n\n');
             return;
         else
-            % This is a R2007a or post R2007a Matlab:
+            % This is a R2014b or later Matlab:
             % Add PsychBasic/MatlabWindowsFilesR2007a/ subfolder to Matlab
             % path:
             rdir = [PsychtoolboxRoot 'PsychBasic\MatlabWindowsFilesR2007a\'];
-            fprintf('Matlab release 2007a or later detected. Will prepend the following\n');
+            fprintf('Matlab release 2014b or later detected. Will prepend the following\n');
             fprintf('folder to your Matlab path: %s ...\n', rdir);
             addpath(rdir);
         end
@@ -582,7 +624,7 @@ if IsWin && ~IsOctave
         fprintf('ERROR: After fixing the problem, restart this installation/update routine.\n\n');
         fprintf('ERROR: You can also just do a: cd(PsychtoolboxRoot); SetupPsychtoolbox;\n\n');
         fprintf('ERROR: This will avoid a full download of Psychtoolbox over the internet and just finish the setup.\n');
-        
+
         fprintf('\n\nInstallation aborted. Fix the reported problem and retry.\n\n');
         return;
     end
@@ -599,7 +641,7 @@ end
 try
     % Linux specific instructions:
     if IsLinux
-        more on;
+        more(pause('query'));
         fprintf('\n\n');
         fprintf('The Psychtoolbox on GNU/Linux needs the following 3rd party libraries\n');
         fprintf('in order to function correctly. If you get "Invalid MEX file errors",\n');
@@ -622,7 +664,7 @@ try
         fprintf('* libusb-1.0 USB low-level access library.\n');
         fprintf('\n');
         fprintf('* libdc1394 IEEE-1394 Firewire and USB-Vision IIDC video capture library.\n');
-        fprintf('  libdc1394.22.so on systems older than Ubuntu 20.04-LTS, libdc1394.25.so for later systems.\n');
+        fprintf('  libdc1394.25.or later.\n');
         fprintf('\n');
         fprintf('* libraw1394 Firewire low-level access library.\n');
         fprintf('\n\n');
@@ -649,7 +691,8 @@ try
     % Check Screen:
     AssertOpenGL;
 
-    if IsLinux
+    if IsLinux && ~IsARM
+        % A blast from the past - Unlikely to be needed nowadays. Definitely skip on RaspberryPi.
         % Setup Desktop compositor ("Compiz") to un-redirect fullscreen windows.
         % This allows to bypass desktop composition for PTB fullscreen onscreen windows,
         % so we get the deterministic timing and high performance we want for visual
@@ -666,7 +709,7 @@ try
         % warning. We skip this on Linux, as the OS will take care of
         % proper rebuilds appropriately, so we don't expect to ever run
         % into this problem:
-        fprintf('Trying to trigger an update of the fontconfig cache if that should prove neccessary.\n');
+        fprintf('\n\nTrying to trigger an update of the fontconfig cache if that should prove neccessary.\n');
         fprintf('This may take a couple of seconds, or sometimes even minutes. Please be patient...\n');
         drawnow;
 
@@ -674,6 +717,7 @@ try
         oldLevel = Screen('Preference', 'WindowShieldingLevel', -1);
         oldVerbo = Screen('Preference', 'Verbosity', 0);
         oldTsMode = Screen('Preference', 'VBLTimestampingmode', -1);
+        oldSkip = Screen('Preference', 'SkipSyncTests', 2);
         % Need to suppress OpenGL error checking during run, as
         % 'WindowShieldingLevel' -1 for hiding the Window triggers new bugs
         % in the OS of the iToys company, this time if running on macOS
@@ -685,14 +729,24 @@ try
             Screen('DrawText', win, 'Ola!');
             Screen('Flip', win);
             sca;
+
+            if Screen('Preference', 'TextRenderer') == 0
+                % Failed to load drawtext plugin.
+                warning('Something went wrong with high-quality text renderer setup. Read ''help DrawTextPlugin'' for troubleshooting.');
+                disp('Press Return key to continue.');
+                pause;
+            end
         catch
-            fprintf('Something went wrong with text renderer setup. Read ''help DrawTextPlugin'' for troubleshooting.\n\n\n');
+            warning('Something went wrong with high-quality text renderer setup. Read ''help DrawTextPlugin'' for troubleshooting.');
+            disp('Press Return key to continue.');
+            pause;
         end
 
         Screen('Preference', 'TextRenderer', oldRenderer);
         Screen('Preference', 'WindowShieldingLevel', oldLevel);
         Screen('Preference', 'Verbosity', oldVerbo);
         Screen('Preference', 'VBLTimestampingmode', oldTsMode);
+        Screen('Preference', 'SkipSyncTests', oldSkip);
         Screen('Preference', 'ConserveVRAM', oldCVS);
     end
 
@@ -702,7 +756,7 @@ catch
     fprintf('\n\n');
     fprintf('Screen() failed to work for some reason:\n\n');
     if IsWin
-      fprintf('On Windows you *must* install the MSVC build runtime of at least GStreamer 1.18.0\n');
+      fprintf('On Windows you *must* install the MSVC build runtime of at least GStreamer 1.20.5\n');
       fprintf('or a later version. Screen() will not work with earlier versions, without GStreamer,\n');
       fprintf('or with the MinGW variants of the GStreamer runtime!\n');
       fprintf('Read ''help GStreamer'' for more info.\n\n');
@@ -728,7 +782,7 @@ if IsLinux
 end
 
 % Some goodbye, copyright and getting started blurb...
-more on;
+more(pause('query'));
 fprintf('GENERAL LICENSING CONDITIONS AND TERMS OF USE:\n');
 fprintf('----------------------------------------------\n\n');
 fprintf('Almost all of the material contained in the Psychtoolbox-3 distribution\n');
@@ -791,6 +845,17 @@ fprintf('\n\n');
 % Clear out everything:
 if IsWin
     clear all;
+end
+
+if IsOSX
+    try
+        % Dummy call to trigger PsychHID on OSX, which in turn may trigger
+        % the diagnostic and troubleshooting instructions for Apples latest
+        % macOS Catalina+ security bullshit - Windows Vista, Apple edition:
+        KbCheck;
+    catch
+        clear PsychHID;
+    end
 end
 
 return;

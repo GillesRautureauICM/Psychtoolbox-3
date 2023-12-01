@@ -21,6 +21,7 @@
  *
  */
 
+// Regular includes:
 #include "Psych.h"
 
 /*
@@ -73,7 +74,7 @@ static int              verbosity = 0;
 // in order to prevent race-conditions for the timer correctness checks in multi-threaded code:
 CRITICAL_SECTION        time_lock;
 
-void PsychWaitUntilSeconds(double whenSecs)
+double PsychWaitUntilSeconds(double whenSecs)
 {
     static unsigned int missed_count=0;
     double now=0.0;
@@ -82,7 +83,7 @@ void PsychWaitUntilSeconds(double whenSecs)
     PsychGetPrecisionTimerSeconds(&now);
 
     // If the deadline has already passed, we do nothing and return immediately:
-    if (now > whenSecs) return;
+    if (now > whenSecs) return(now);
 
     // Note that technically there is potential for a race-condition on the
     // sleepwait_threshold and missed_count variables if multiple threads
@@ -132,22 +133,21 @@ void PsychWaitUntilSeconds(double whenSecs)
     }
 
     // Ready.
-    return;
+    return(now);
 }
 
-void PsychWaitIntervalSeconds(double delaySecs)
+double PsychWaitIntervalSeconds(double delaySecs)
 {
-    double deadline;
+    double deadline = PsychGetAdjustedPrecisionTimerSeconds(NULL);
 
-    if (delaySecs <= 0) return;
+    if (delaySecs <= 0)
+        return(deadline);
 
-    // Get current time:
-    PsychGetPrecisionTimerSeconds(&deadline);
     // Compute deadline in absolute system time:
-    deadline+=delaySecs;
+    deadline += delaySecs;
+
     // Wait until deadline reached:
-    PsychWaitUntilSeconds(deadline);
-    return;
+    return(PsychWaitUntilSeconds(deadline));
 }
 
 /* PsychYieldIntervalSeconds() - Yield the cpu for given 'delaySecs'
@@ -168,7 +168,7 @@ void PsychWaitIntervalSeconds(double delaySecs)
  * zero setting.
  *
  */
-void PsychYieldIntervalSeconds(double delaySecs)
+double PsychYieldIntervalSeconds(double delaySecs)
 {
     if (delaySecs <= 0) {
         // Yield cpu for remainder of this timeslice via special Sleep(0) call:
@@ -188,6 +188,8 @@ void PsychYieldIntervalSeconds(double delaySecs)
         delaySecs = (delaySecs > 0.001) ? delaySecs : 0.001;
         Sleep((int) (delaySecs * 1000.0f));
     }
+
+    return(PsychGetAdjustedPrecisionTimerSeconds(NULL));
 }
 
 double PsychGetKernelTimebaseFrequencyHz(void)
@@ -252,6 +254,10 @@ int PsychOSIsMSWin10(void)
 {
     #if defined(PTBMODULE_Screen) || defined(PTBMODULE_PsychPortAudio)
     HKEY hkey;
+    DWORD dwMajorVersion;
+    DWORD dwLen;
+    char currentBuildStr[10];
+
     // Init flag to -1 aka unknown:
     static int isWin10 = -1;
 
@@ -259,7 +265,19 @@ int PsychOSIsMSWin10(void)
         // First call: Do the query!
         if (ERROR_SUCCESS == RegOpenKeyEx(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", 0, KEY_READ, &hkey)) {
             // CurrentMajorVersionNumber key exists and could be opened? This is only possible on Windows-10 or later.
-            isWin10 = (ERROR_SUCCESS == RegQueryValueEx(hkey, "CurrentMajorVersionNumber", NULL, NULL, NULL, NULL)) ? 1 : 0;
+            dwLen = sizeof(DWORD);
+            isWin10 = (ERROR_SUCCESS == RegQueryValueEx(hkey, "CurrentMajorVersionNumber", NULL, NULL, (LPBYTE) &dwMajorVersion, &dwLen)) ? 1 : 0;
+
+            // Try to map to actual Windows major version if this is Windows-10 or later:
+            if (isWin10 && (dwMajorVersion == 10)) {
+                dwLen = sizeof(currentBuildStr);
+                memset(currentBuildStr, 0, dwLen);
+
+                if ((ERROR_SUCCESS == RegQueryValueEx(hkey, "CurrentBuildNumber", NULL, NULL, (LPBYTE) &currentBuildStr, &dwLen)) &&
+                    (dwLen >= 4) && (1 == sscanf(currentBuildStr, "%i", &isWin10)))
+                    isWin10 = (isWin10 >= 22000) ? 11 : 10;
+            }
+
             RegCloseKey(hkey);
         }
         else {
@@ -271,7 +289,7 @@ int PsychOSIsMSWin10(void)
     // Return flag:
     return(isWin10);
     #else
-    // Only Screen() ans PsychPortAudio() is currently allowed to call this function, because any mex file which needs this function must link against advapi32.lib,
+    // Only Screen() and PsychPortAudio() is currently allowed to call this function, because any mex file which needs this function must link against advapi32.lib,
     // those do, but most other mex files don't. Warn and return false -- non Windows-10 -- as safe result.
     printf("PTB-WARNING: Called PsychOSIsMSWin10() from something else than PTBMODULE_Screen or PTBMODULE_PsychPortAudio! This won't work. Modify source code to make it work if needed!\n");
     return(0);
@@ -1079,13 +1097,16 @@ void PsychGetPrecisionTimerSeconds(double *secs)
     return;
 }
 
-void PsychGetAdjustedPrecisionTimerSeconds(double *secs)
+double PsychGetAdjustedPrecisionTimerSeconds(double *secs)
 {
     double rawSecs, factor;
 
     PsychGetPrecisionTimerSeconds(&rawSecs);
     PsychGetPrecisionTimerAdjustmentFactor(&factor);
-    *secs=rawSecs * precisionTimerAdjustmentFactor;
+    rawSecs = rawSecs * precisionTimerAdjustmentFactor;
+
+    if (secs) *secs = rawSecs;
+    return(rawSecs);
 }
 
 void PsychGetPrecisionTimerAdjustmentFactor(double *factor)
@@ -1680,10 +1701,10 @@ const char* PsychSupportStatus(void)
 
         // Special case for Windows-10 and later, as GetVersionEx() doesn't report
         // version numbers faithfully beyond Windows 8, unless application manifest
-        // would mark the app as Windows-8.1+ compatible. Fake a 10.0 version if this
+        // would mark the app as Windows-8.1+ compatible. Get major version if this
         // is Windows 10 or later - should be good enough for our purposes.
         if (PsychOSIsMSWin10()) {
-            osvi.dwMajorVersion = 10;
+            osvi.dwMajorVersion = PsychOSIsMSWin10();
             osvi.dwMinorVersion = 0;
         }
 
@@ -1704,8 +1725,8 @@ const char* PsychSupportStatus(void)
             sprintf(codename, "8");
         else if (osvi.dwMajorVersion == 6 && osvi.dwMinorVersion == 3)
             sprintf(codename, "8.1");
-        else if (osvi.dwMajorVersion == 10 && osvi.dwMinorVersion == 0)
-            sprintf(codename, "10");
+        else if (osvi.dwMajorVersion >= 10)
+            sprintf(codename, "%i", (int) osvi.dwMajorVersion);
         else
             sprintf(codename, "");
 
@@ -1716,7 +1737,7 @@ const char* PsychSupportStatus(void)
 
         if (isSupported) {
             // Windows-10 is fully supported, earlier Windows only partially:
-            sprintf(statusString, "Windows %s (Version %i.%i) %s.", codename, osvi.dwMajorVersion, osvi.dwMinorVersion, (osvi.dwMajorVersion == 10) ? "supported and tested to some limited degree" : "partially supported, but no longer tested at all");
+            sprintf(statusString, "Windows %s (Version %i.%i) %s.", codename, osvi.dwMajorVersion, osvi.dwMinorVersion, (osvi.dwMajorVersion == 10) ? "supported and tested to some limited degree" : "may partially work ok'ish, but no longer tested or officially supported at all");
         }
         else {
             sprintf(statusString, "Windows %s (Version %i.%i) is not supported.", codename, osvi.dwMajorVersion, osvi.dwMinorVersion);

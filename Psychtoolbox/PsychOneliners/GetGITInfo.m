@@ -45,6 +45,10 @@ if ~exist(gitPath, 'file')
     fprintf('*** Failed to find git, returning empty.\n');
     return;
 end
+if IsWin
+    % allow spaces in path to git
+    gitPath = ['"' gitPath '"'];
+end
 
 % Enclose path with double quotes for space characters in folder names in
 if IsWin
@@ -81,11 +85,7 @@ if status == 0
     gitInfo.LastCommit = getStringLines(result);
     fclose(fid);
 end
-if ~IsWin
-    unix(['rm -rf ' tempFile]);
-else
-    delete(tempFile);
-end
+delete(tempFile);
 cd(curDir);
 
 % get remote repository urls

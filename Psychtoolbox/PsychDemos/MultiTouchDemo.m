@@ -30,8 +30,8 @@ function MultiTouchDemo(dev, screenId, verbose)
 % be distance for fingers or tools hovering over a touch surface, if that
 % surface provides that info.
 %
-% This demo currently only works on Linux + X11 display system,
-% not on Linux + Wayland, not on other operating systems.
+% This demo currently works on Linux + X11 display system, not on Linux + Wayland.
+% It also works on MS-Windows 10 and later.
 %
 % For background info on capabilities and setup see "help TouchInput".
 %
@@ -97,6 +97,8 @@ function MultiTouchDemo(dev, screenId, verbose)
 
     % blobcol tracks active touch points - and dying ones:
     blobcol = {};
+    blobmin = inf;
+
     buttonstate = 0;
     colmap = [ 1, 0, 0; 0, 1, 0; 0, 0, 1; 1, 1, 0; 1, 0, 1; 0, 1, 1; 1, 1, 1];
 
@@ -113,6 +115,13 @@ function MultiTouchDemo(dev, screenId, verbose)
         % Touch blob id - Unique in the session at least as
         % long as the finger stays on the screen:
         id = evt.Keycode;
+
+        % Keep the id's low, so we have to iterate over less blobcol slots
+        % to save computation time:
+        if isinf(blobmin)
+          blobmin = id - 1;
+        end
+        id = id - blobmin;
 
         if evt.Type == 0
           % Not a touch point, but a button press or release on a
@@ -200,7 +209,11 @@ function MultiTouchDemo(dev, screenId, verbose)
         end
 
         if verbose
-          blobcol{id}.text = disp(evt);
+          if IsOctave
+            blobcol{id}.text = disp(evt);
+          else
+            blobcol{id}.text = evalc('disp(evt)');
+          end
         end
       end
 

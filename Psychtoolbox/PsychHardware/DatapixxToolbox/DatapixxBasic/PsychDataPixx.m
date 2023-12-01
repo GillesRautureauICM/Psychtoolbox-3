@@ -458,8 +458,9 @@ if cmd == 0
     end
     
     % We always unconditionally draw scanline 1 in all-black, so PSYNC may
-    % work reliably:
-    glRasterPos2i(0, 1);
+    % work reliably. Leave out 1st leftmost pixel on VPixx request, so to avoid
+    % interference with the EEG single-pixel marker in the top-left corner:
+    glRasterPos2i(1, 1);
     glDrawPixels(size(dpx.blackline, 2), 1, GL.RGB, GL.UNSIGNED_BYTE, dpx.blackline);
     
     % Any work to do in sync with next stimulus onset?
@@ -1515,9 +1516,9 @@ function syncresult = syncClocks
     if verbosity > 3
         fprintf('PsychDataPixx: ClockSync(%i) on box "%s": Got %i valid samples, maxconfidence interval = %f msecs, winner interval %f msecs.\n', dpx.syncmode, dpx.ID, ic, 1000 * dpx.maxMinwinThreshold, 1000 * minwin);
         if dpx.syncmode == 1
-            fprintf('PsychDataPixx: Confidence windows in interval [%f - %f] msecs. Range of clock offset variation: %f msecs.\n', 1000 * min(t(2,:)-t(1,:)), 1000 * max(t(2,:)-t(1,:)), 1000 * range(t(2,:) - t(3,:)));
+            fprintf('PsychDataPixx: Confidence windows in interval [%f - %f] msecs. Range of clock offset variation: %f msecs.\n', 1000 * min(t(2,:)-t(1,:)), 1000 * max(t(2,:)-t(1,:)), 1000 * psychrange(t(2,:) - t(3,:)));
         else
-            fprintf('PsychDataPixx: Confidence windows in interval [%f - %f] msecs. Range of clock offset variation: %f msecs.\n', 1000 * min(t(2,:)-t(1,:)), 1000 * max(t(2,:)-t(1,:)), 1000 * range(t(1,:) - t(3,:)));
+            fprintf('PsychDataPixx: Confidence windows in interval [%f - %f] msecs. Range of clock offset variation: %f msecs.\n', 1000 * min(t(2,:)-t(1,:)), 1000 * max(t(2,:)-t(1,:)), 1000 * psychrange(t(1,:) - t(3,:)));
         end
     end
     

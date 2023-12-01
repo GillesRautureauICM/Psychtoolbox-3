@@ -25,6 +25,7 @@
 
 #if PSYCH_SYSTEM == PSYCH_OSX
 double PsychCocoaGetBackingStoreScaleFactor(void* window);
+void PsychCocoaAssignCAMetalLayer(PsychWindowRecordType *windowRecord);
 #endif
 
 // Pointer to master onscreen window during setup phase of stereomode 10 (Dual-window stereo):
@@ -82,7 +83,9 @@ static char synopsisString[] =
     "manager. The flag kPsychExternalDisplayMethod marks this onscreen window as not an actual visual "
     "stimulation surface, ie. actual visual stimulation is provided by some other external display mechanism, "
     "e.g., Vulkan or some VR compositor or such. This tells Screen() to suppress certain warnings or checks "
-    "which would be prudent if the window were the primary and critical means of visual stimulation.\n\n"
+    "which would be prudent if the window were the primary and critical means of visual stimulation. "
+    "The flag kPsychDontUseFlipperThread prevents use of the internal background flipper thread, and thereby "
+    "of any functionality depending on it, e.g., frame-sequential stereomode 11 and async flips.\n\n"
     "\"clientRect\" This optional parameter allows to define a size of the onscreen windows drawing area "
     "that is different from the actual size of the windows framebuffer. If set, then the imaging pipeline "
     "is started and a virtual framebuffer of the size of \"clientRect\" is created. Your code will draw "
@@ -313,8 +316,45 @@ PsychError SCREENOpenWindow(void)
 
     specialflags = 0;
     PsychCopyInIntegerArg64(9,FALSE, &specialflags);
-    if (specialflags < 0 || (specialflags > 0 && !(specialflags & (kPsychGUIWindow | kPsychGUIWindowWMPositioned | kPsychExternalDisplayMethod))))
+    if (specialflags < 0 || (specialflags > 0 &&
+        !(specialflags & (kPsychGUIWindow | kPsychGUIWindowWMPositioned | kPsychExternalDisplayMethod | kPsychDontUseFlipperThread | kPsychSkipSecondaryVsyncForFlip))))
         PsychErrorExitMsg(PsychError_user, "Invalid 'specialflags' provided.");
+
+    // Check if this is macOS on a Apple Silicon ARM M1+ SoC with Apple proprietary gpu:
+    #if PSYCH_SYSTEM == PSYCH_OSX
+    {
+        psych_bool isARM;
+
+        PsychGetOSXMinorVersion(&isARM);
+        if (isARM && !(specialflags & kPsychExternalDisplayMethod) && !dontCaptureScreen) {
+            // M1 SoC or later, Apple proprietary gpu with OpenGL emulated on top of Metal + CoreAnimation.
+            // This does not work at all with OpenGL CGL low-level fullscreen display mode, only through
+            // Cocoa+NSOpenGL+NSWindow on top of CoreAnimation. Not using Cocoa will simply error abort with
+            // a "CGLSetFullScreenOnDisplay failed: invalid fullscreen drawable" error. So we switch to Cocoa
+            // voluntarily. Ofc. with this, OpenGL display timing/timestamping is utterly broken, but it may
+            // allow users to limp along on their new shiny expensive M1 iToy. We take specialflags setting
+            // kPsychExternalDisplayMethod as a sign that the user requested Vulkan backend display or similar
+            // to try to workaround this issue, so we spare them extra warnings and actions, etc.:
+
+            // Need to take action. Request Quartz composition / Cocoa / NSOpenGL backend:
+            PsychPrefStateSet_ConserveVRAM(PsychPrefStateGet_ConserveVRAM() | kPsychUseAGLCompositorForFullscreenWindows);
+
+            if (PsychPrefStateGet_Verbosity() > 1) {
+                printf("PTB-WARNING: This is a Apple silicon based ARM M1 SoC or later with Apple proprietary gpu.\n");
+                printf("PTB-WARNING: All of Psychtoolbox own timing and timestamping mechanisms will not work on\n");
+                printf("PTB-WARNING: such a machine, leading to disastrously bad visual stimulus presentation timing\n");
+                printf("PTB-WARNING: and timestamping. Do not trust or use this machine if timing is of any concern!\n");
+                printf("PTB-WARNING: You may want to try enabling Psychtoolbox Vulkan display backend, after proper\n");
+                printf("PTB-WARNING: configuration. See 'help PsychImaging' the section about the 'UseVulkanDisplay'\n");
+                printf("PTB-WARNING: task, and 'help PsychHDR' for some more setup instructions for MoltenVK on macOS.\n");
+                printf("PTB-WARNING: Note that this approach is completely unsupported by us in case of any problems, and\n");
+                printf("PTB-WARNING: may just be as bad performance and timing-wise. It is completely untested on M1.\n");
+                printf("PTB-WARNING: A simple test case would be running SimpleHDRDemo. If it wouldn't flood the command\n");
+                printf("PTB-WARNING: window with error and warning messages, that would be mildly encouraging. Let us know.\n\n");
+            }
+        }
+    }
+    #endif
 
     // Alloc in optional double vector with VRR mode and parameters:
     vrrParams = NULL;
@@ -342,7 +382,7 @@ PsychError SCREENOpenWindow(void)
             if (stereomode == kPsychDualStreamStereo)
                 PsychErrorExitMsg(PsychError_user, "Use of VRR mode for fine-grained stimulus presentation timing is incompatible with dual-stream stereo presentation on special display devices. Choose either VRR or this stereo mode. Aborting.");
 
-            if (imagingmode & kPsychNeedFinalizedFBOSinks)
+            if ((imagingmode & kPsychNeedFinalizedFBOSinks) && !((PSYCH_SYSTEM == PSYCH_LINUX) && (vrrMode != kPsychVRROwnScheduled) && (specialflags & kPsychExternalDisplayMethod)))
                 PsychErrorExitMsg(PsychError_user, "Use of VRR mode for fine-grained stimulus presentation timing is incompatible with use of finalized FBO sinks on special display devices. Choose either VRR or finalized FBO sinks. Aborting.");
         }
 
@@ -851,7 +891,7 @@ PsychError SCREENOpenWindow(void)
 
             // Convert windowShieldingLevel 1000 - 1499 and 1500 - 1999 to alpha range 0.0 - 1.0 and
             // assign it as parameter string for our builtin post-multiply function:
-            snprintf(configAlphaString, sizeof(configAlphaString), "%f", (((float) (windowShieldingLevel % 500)) / 499.0));
+            snprintf(configAlphaString, sizeof(configAlphaString), "%1.3f", (((float) (windowShieldingLevel % 500)) / 499.0));
 
             // Add call to our builtin post-multiply function to the end of the finalizer blit chain for left-eye/mono buffer:
             PsychPipelineAddBuiltinFunctionToHook(windowRecord, "LeftFinalizerBlitChain", "Builtin:AlphaPostMultiply", INT_MAX, configAlphaString);
@@ -955,6 +995,13 @@ PsychError SCREENOpenWindow(void)
                 windowRecord->internalMouseMultFactor = isf;
                 windowRecord->externalMouseMultFactor = 1.0;
             }
+
+            // Graphics api interop setup under Cocoa, e.g., for Vulkan MoltenVK interop.
+            // This is the point where we transition from OpenGL rendering and display to
+            // display via the external graphics consumer, ie. switching to the CAMetalLayer.
+            // OpenGL rendering to our onscreen window and OpenGL bufferswap will no longer
+            // work from here on, only OpenGL rendering to the interop FBO's/textures:
+            PsychCocoaAssignCAMetalLayer(windowRecord);
         }
         else {
             // CGL:

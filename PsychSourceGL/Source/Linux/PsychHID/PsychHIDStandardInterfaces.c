@@ -892,6 +892,16 @@ static void KbQueueProcessEvents(void)
                                 }
                             }
 
+                            if (event) {
+                                evt.X = event->event_x;
+                                evt.Y = event->event_y;
+                                evt.normX = evt.X / screen_width;
+                                evt.normY = evt.Y / screen_height;
+                            }
+                            else {
+                                evt.X = evt.Y = evt.normX = evt.normY = 0;
+                            }
+
                             // Normalize x and y positions to 0.0 - 1.0 range (at least for absolute touch devices).
                             // Also remap to X-Screen space:
                             for (j = 0; j < dev->num_classes; j++) {
@@ -1127,7 +1137,7 @@ int PsychHIDGetDefaultKbQueueDevice(void)
     return(-1);
 }
 
-PsychError PsychHIDOSKbQueueCreate(int deviceIndex, int numScankeys, int* scanKeys, int numValuators, int numSlots, unsigned int flags, unsigned int windowHandle)
+PsychError PsychHIDOSKbQueueCreate(int deviceIndex, int numScankeys, int* scanKeys, int numValuators, int numSlots, unsigned int flags, psych_uint64 windowHandle)
 {
     XIDeviceInfo* dev = NULL;
 
@@ -1180,7 +1190,7 @@ PsychError PsychHIDOSKbQueueCreate(int deviceIndex, int numScankeys, int* scanKe
     psychHIDKbQueueFlags[deviceIndex] = flags;
 
     // Store associated X-Window handle, or zero for unspecified:
-    psychHIDKbQueueXWindow[deviceIndex] = windowHandle;
+    psychHIDKbQueueXWindow[deviceIndex] = (unsigned int) windowHandle;
 
     if (x_inputMethod == NULL) {
         // Create an input method and context in the currently set locale

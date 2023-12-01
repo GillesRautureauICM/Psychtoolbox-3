@@ -135,6 +135,13 @@ PsychError SCREENConfigureDisplay(void)
                     "settings. The meaning of specific values is GPU and vendor specific and only useful for experts.\n"
                     "Example call: Screen('ConfigureDisplay', 'Dithering', screenNumber, ditherEnable); "
                     "\n\n"
+                    "'RequestMinimumOutputPrecision' Try to request a specific minimum output depth 'minBpc' for video signals on a "
+                    "X-Screen under Linux/X11. This is currently only supported on Linux/X11, and it does not guarantee that "
+                    "you will get the requested minimum precision, as various hardware constraints in the graphics card, cabling, "
+                    "display device, and available memory bandwidth can lead to a lower precision than requested. In the end it "
+                    "is only a polite request to the graphics driver. Example call:\n"
+                    "Screen('ConfigureDisplay', 'RequestMinimumOutputPrecision', screenNumber, minBpc); "
+                    "\n\n"
                     "'Scanout': Retrieve or set scanout parameters for a given output 'outputId' of screen 'screenNumber'. "
                     "Returns a struct 'oldSettings' with the current settings for that output. Only supported on Linux.\n"
                     "It returns and accepts the following optional parameters:\n\n"
@@ -500,8 +507,34 @@ PsychError SCREENConfigureDisplay(void)
     }
 
 #if PSYCH_SYSTEM != PSYCH_LINUX
-    PsychErrorExitMsg(PsychError_unimplemented, "Sorry, this function is only supported on Linux.");
+    PsychErrorExitMsg(PsychError_unimplemented, "Sorry, unless you made a typo in the function name, this function is likely only supported on Linux.");
 #else
+
+    // Usercode wants to manually request a higher video output bit depth on an output?
+    if (PsychMatch(settingName, "RequestMinimumOutputPrecision")) {
+        int minBpc;
+
+        // Get the screen number from the windowPtrOrScreenNumber.  This also checks to make sure that the specified screen exists.
+        PsychCopyInScreenNumberArg(2, TRUE, &screenNumber);
+        if (screenNumber == -1) PsychErrorExitMsg(PsychError_user, "The specified onscreen window has no ancestral screen or invalid screen number.");
+
+        // Get minimum bpc for video output:
+        PsychCopyInIntegerArg(3, TRUE, &minBpc);
+        if (minBpc < 8) PsychErrorExitMsg(PsychError_user, "Invalid minimum output bit depth requested. Must be at least 8.");
+
+        // Running under Linux/X11 native?
+        #if !defined(PTB_USE_WAFFLE)
+            // Request at least minBpc video signal precision on all video outputs associated with screen 'screenNumber':
+            // Note: Actual precision can be lower, subject to constraints of the video output, cable, display sink and hardware,
+            // also due to video bandwidth constraints.
+            PsychCopyOutDoubleArg(1, kPsychArgOptional, (double) PsychOSEnsureMinimumOutputPrecision(screenNumber, minBpc));
+        #else
+            // Nope: Report failure back:
+            PsychCopyOutDoubleArg(1, kPsychArgOptional, 0);
+        #endif
+
+        return(PsychError_none);
+    }
 
     if(!PsychMatch(settingName, "Scanout")) PsychErrorExitMsg(PsychError_user, "Unknown 'setting' name provided. Typo?");
 
@@ -590,28 +623,35 @@ PsychError SCREENConfigureDisplay(void)
 PsychError SCREENResolution(void)
 {
     static char useString[] = "oldResolution=Screen('Resolution', screenNumber [, newwidth][, newheight][, newHz][, newPixelSize][, specialMode]);";
-    static char synopsisString[] =	"Query or change display settings for screen \"screenNumber\".\n"
+    static char synopsisString[] = "Query or change display settings for screen \"screenNumber\".\n"
                     "Returns a struct \"oldResolutions\" with the current settings for screen "
                     "resolution, refresh rate and pixel depth. Optionally sets new settings "
                     "for screen resolution \"newwidth\" x \"newheight\", refresh rate \"newHz\" "
                     "and framebuffer pixel depth \"newPixelSize\". Providing invalid or incompatible "
                     "settings will raise an error. Especially the color depth \"newPixelSize\" should "
-                    "usually not be set to anything else than its default of 32 bpp or 24 bpp. "
+                    "usually not be set to anything else than its default of 32 bpp or 24 bpp, iow. it "
+                    "should be best left alone. "
                     "Other settings can impair alpha-blending on some systems, a setting of 16 bpp "
                     "will disable alpha-blending and create drastically reduced color resolution of "
                     " 5 bits per color channel. "
                     "A setting of 8 bpp is not supported at all on MacOS/X and will create artifacts "
                     "on all other systems. Use a size of 32 bpp even for clut animation. This function "
                     "may not work on all MS-Windows setups, your mileage may vary...\n"
-                    "On Linux the function only switches display settings in the conventional sense on "
-                    "a single-display setup. On a multi-display setup, this function only changes the "
-                    "total size of the framebuffer, ie., 'newwidth' and 'newheight', the other "
-                    "parameters are silently ignored. On Linux, the video settings of each individual display, "
-                    "e.g., resolution, video refresh rate, panning, are queried and changed via the "
-                    "Screen('ConfigureDisplay') function instead. This allows for much more flexibility, "
-                    "e.g., you can have a framebuffer bigger than the combined resolution of all displays "
-                    "and only show a fraction of it. You can change the relative position of all physical "
-                    "displays, configure \"mirror modes\", \"side by side\", or \"on top of each other\" "
+                    "On Linux/X11 with the classic X-Server, the function only switches display settings "
+                    "in the conventional sense on a single-display setup, or on a multi-X-screen setup with "
+                    "one display per X-Screen. On a multi-display-per-X-Screen setup, this function only "
+                    "changes the total size of the framebuffer, ie., 'newwidth' and 'newheight', the other "
+                    "parameters are silently ignored. You can create X-Screens and fullscreen onscreen "
+                    "windows that are bigger than what is actually displayable on your attached displays. "
+                    "This allows for some interesting special tricks if you know what you are doing, but can "
+                    "also cause quite a bit of confusion. We recommend using this function on setups with "
+                    "a single display or a single display for each X-Screen (as listed by Screen('Screens'). "
+                    "On Linux/X11 setups with multiple attached displays per X-Screen, the video settings "
+                    "of each individual display, e.g., resolution, video refresh rate, panning, can be queried "
+                    "and changed via the Screen('ConfigureDisplay') function instead. This allows for more "
+                    "flexibility, e.g., you can have a framebuffer bigger than the combined resolution of all "
+                    "displays and only show a fraction of it. You can change the relative position of all "
+                    "physical displays, configure \"mirror modes\", \"side by side\", or \"on top of each other\" "
                     "display configurations.\n"
                     "Psychtoolbox will automatically restore the systems display resolution to the "
                     "system settings made via the display control panel as soon as either your script "

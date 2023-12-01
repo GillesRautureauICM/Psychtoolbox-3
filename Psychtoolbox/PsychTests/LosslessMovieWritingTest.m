@@ -163,7 +163,7 @@ Screen('Flip', win);
 moviefile = [pwd filesep 'Testmovie.avi'];
 
 % Step 2: Create a movie file:
-movie = Screen('CreateMovie', win, moviefile, msize, nsize, 1, codec, nrchannels, bpc);
+movie = Screen('CreateMovie', win, 'Testmovie.avi', msize, nsize, 1, codec, nrchannels, bpc);
 
 % Add 3 frames with our test image texture:
 for i=1:10
@@ -233,7 +233,7 @@ else
     
     mindelta = min(imgdiff) %#ok<NOPRT,NASGU>
     maxdelta = max(imgdiff) %#ok<NOPRT,NASGU>
-    rangedelta = range(imgdiff) %#ok<NOPRT,NASGU>
+    rangedelta = psychrange(imgdiff) %#ok<NOPRT,NASGU>
     close all;
     hist(double(imgdiff));
     title('Error distribution in pixel values:');

@@ -39,31 +39,37 @@ static double       precisionTimerAdjustmentFactor = 1;
 static psych_bool   isKernelTimebaseFrequencyHzInitialized = FALSE;
 static long double  kernelTimebaseFrequencyHz;
 
-void PsychWaitUntilSeconds(double whenSecs)
+double PsychWaitUntilSeconds(double whenSecs)
 {
     uint64_t        deadlineAbsTics;
 
     // Compute deadline for wakeup in mach absolute time units:
     deadlineAbsTics= (uint64_t) (kernelTimebaseFrequencyHz * ((long double) whenSecs));
 
-    if (!(deadlineAbsTics > 0 && whenSecs > 0)) return;
+    if (!(deadlineAbsTics > 0 && whenSecs > 0))
+        return(PsychGetAdjustedPrecisionTimerSeconds(NULL));
 
     // Call mach_wait_unit in an endless loop, because it can fail with retcode>0.
     // In that case we just restart...
     while(mach_wait_until(deadlineAbsTics));
+
+    return(PsychGetAdjustedPrecisionTimerSeconds(NULL));
 }
 
-void PsychWaitIntervalSeconds(double delaySecs)
+double PsychWaitIntervalSeconds(double delaySecs)
 {
     long double     waitPeriodTicks;
     uint64_t        startTimeAbsTics, deadlineAbsTics;
 
-    if (delaySecs <= 0) return;
+    if (delaySecs <= 0)
+        return(PsychGetAdjustedPrecisionTimerSeconds(NULL));
 
     startTimeAbsTics = mach_absolute_time();
     waitPeriodTicks= kernelTimebaseFrequencyHz * delaySecs;
     deadlineAbsTics= startTimeAbsTics + (uint64_t) waitPeriodTicks;
     while(mach_wait_until(deadlineAbsTics));
+
+    return(PsychGetAdjustedPrecisionTimerSeconds(NULL));
 }
 
 /* PsychYieldIntervalSeconds() - Yield the cpu for given 'delaySecs'
@@ -84,7 +90,7 @@ void PsychWaitIntervalSeconds(double delaySecs)
  * zero setting.
  *
  */
-void PsychYieldIntervalSeconds(double delaySecs)
+double PsychYieldIntervalSeconds(double delaySecs)
 {
     if (delaySecs <= 0) {
         // Yield cpu for remainder of this timeslice:
@@ -94,9 +100,11 @@ void PsychYieldIntervalSeconds(double delaySecs)
         // On OS/X we use standard wait ops - they're good for us:
         PsychWaitIntervalSeconds(delaySecs);
     }
+
+    return(PsychGetAdjustedPrecisionTimerSeconds(NULL));
 }
 
-double	PsychGetKernelTimebaseFrequencyHz(void)
+double PsychGetKernelTimebaseFrequencyHz(void)
 {
     long double                 clockPeriodNSecs;
     mach_timebase_info_data_t   tbinfo;
@@ -153,12 +161,15 @@ void PsychGetPrecisionTimerSeconds(double *secs)
     *secs= mach_absolute_time() / kernelTimebaseFrequencyHz;
 }
 
-void PsychGetAdjustedPrecisionTimerSeconds(double *secs)
+double PsychGetAdjustedPrecisionTimerSeconds(double *secs)
 {
-    double  rawSecs;
+    double rawSecs;
 
     PsychGetPrecisionTimerSeconds(&rawSecs);
-    *secs=rawSecs * precisionTimerAdjustmentFactor;
+    rawSecs = rawSecs * precisionTimerAdjustmentFactor;
+
+    if (secs) *secs = rawSecs;
+    return(rawSecs);
 }
 
 void PsychGetPrecisionTimerAdjustmentFactor(double *factor)
@@ -537,7 +548,7 @@ psych_uint64 PsychAutoLockThreadToCores(psych_uint64* curCpuMask)
  * the iPhone company. It only gives us the x in OSX 10.x.y, but that's usually
  * all we need.
  */
-int PsychGetOSXMinorVersion(void)
+int PsychGetOSXMinorVersion(psych_bool* isARM)
 {
     int mib[2] = { CTL_KERN, KERN_OSRELEASE };
     int minorVersion;
@@ -546,15 +557,30 @@ int PsychGetOSXMinorVersion(void)
 
     // Query kernel version string:
     if (sysctl(mib, 2, tempStr, &tempStrSize, NULL, 0)) {
-        printf("PTB-WARNING: Could not query Darwin kernel version! This will end badly...\n");
+        printf("PTB-WARNING: Could not query Darwin kernel release! This will end badly...\n");
     }
 
     // Parse out major version: That - 4 == OSX minor version:
     if (1 != sscanf(tempStr, "%i", &minorVersion)) {
-        printf("PTB-WARNING: Could not parse Darwin kernel major version! This will end badly...\n");
+        printf("PTB-WARNING: Could not parse Darwin kernel major version from release! This will end badly...\n");
     }
 
     minorVersion = minorVersion - 4;
+
+    // Caller wants machine architecture, ie. Intel or ARM 64-Bit?
+    if (isARM) {
+        // Get kernel version string, parse it to see if it is a kernel targeted at Apple Silicon M1 SoC and later:
+        mib[1] = KERN_VERSION;
+        tempStrSize = sizeof(tempStr);
+
+        if (sysctl(mib, 2, tempStr, &tempStrSize, NULL, 0)) {
+            *isARM = FALSE;
+            printf("PTB-WARNING: Could not query Darwin kernel version string! This will end badly... Assuming Intel architecture.\n");
+        }
+        else {
+            *isARM = (strstr(tempStr, "RELEASE_ARM") != NULL) ? TRUE : FALSE;
+        }
+    }
 
     // Return minorVersion of the OSX version number: 10.minorVersion
     return(minorVersion);
@@ -568,28 +594,31 @@ const char* PsychSupportStatus(void)
 {
     // Operating system minor version:
     int osMinor;
+    psych_bool isARM;
 
     // Init flag to -1 aka unknown:
-    static int  isSupported = -1;
+    static int isSupported = -1;
     static char statusString[256];
 
     if (isSupported == -1) {
         // First call: Do the query!
 
-        // Query OS/X version:
-        osMinor = PsychGetOSXMinorVersion();
+        // Query macOS version and machine processor architecture:
+        osMinor = PsychGetOSXMinorVersion(&isARM);
 
-        // Only OSX 10.15 is officially supported:
-        isSupported = (osMinor == 15 || osMinor == 15) ? 1 : 0;
+        // Only macOS 13 Intel is officially supported:
+        isSupported = (!isARM && (osMinor - 5 == 13)) ? 1 : 0;
 
-        if (isSupported) {
-            sprintf(statusString, "OSX 10.%i minimally supported and tested.", osMinor);
-        }
-        else {
-            if (osMinor < 15)
-                sprintf(statusString, "OSX version 10.%i is no longer tested or officially supported at all for this Psychtoolbox release.", osMinor);
-            else
-                sprintf(statusString, "OSX version 11.%i is not yet tested or officially supported at all for this Psychtoolbox release.", osMinor - 16);
+        if (osMinor <= 15) {
+            // macOS 10 family is done, although there's some chance it still works back to 10.11, but who knows?
+            sprintf(statusString, "macOS version 10.%i is no longer tested or officially supported for this Psychtoolbox release.", osMinor);
+        } else if (osMinor - 5 <= 12) {
+            // Now unsupported macOS 11+
+            sprintf(statusString, "macOS version %i is no longer tested or officially supported for this Psychtoolbox release.", osMinor - 5);
+        } else {
+            // Currently supported or too new (== not yet supported) macOS version:
+            sprintf(statusString, "macOS version %i %s is %s.", osMinor - 5, isARM ? "ARM M1+ SoC" : "Intel",
+                    isSupported ? "minimally tested and supported" : "not yet tested or supported at all for this Psychtoolbox release.");
         }
     }
 

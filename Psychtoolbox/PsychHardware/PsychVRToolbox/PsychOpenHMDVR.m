@@ -1,6 +1,8 @@
 function varargout = PsychOpenHMDVR(cmd, varargin)
 % PsychOpenHMDVR - A high level driver for VR hardware supported via OpenHMD.
 %
+% This driver is currently only for use with Linux/X11 with a native XOrg X-Server.
+%
 % Note: If you want to write VR code that is portable across
 % VR headsets of different vendors, then use the PsychVRHMD()
 % driver instead of this driver. The PsychVRHMD driver will use
@@ -13,21 +15,62 @@ function varargout = PsychOpenHMDVR(cmd, varargin)
 %
 % This driver needs libopenhmd.so version 0.3 or later to be installed
 % in a linker accessible path (e.g., /usr/local/lib/ on a Linux system).
-% You can either download, compile and install it from ...
+% You can either download, compile and install libopenhmd yourself from
+% the official project GitHub...
 %
 % https://github.com/OpenHMD/OpenHMD
 %
-% ... or get a precompiled library for libopenhmd.so from:
+% ... or if you have a Oculus Rift and want to take advantage of an experimental
+% implementation that provides absolute head position tracking of reasonable quality,
+% from this repo and branch...
 %
-% RaspberryPi/Raspbian: https://github.com/Psychtoolbox-3/MiscStuff/tree/master/OpenHMD32BitRaspbianARMv7
+% https://github.com/thaytan/OpenHMD/tree/rift-kalman-filter
 %
-% 64-Bit Intel/Ubuntu:  https://github.com/Psychtoolbox-3/MiscStuff/tree/master/OpenHMD64BitIntelUbuntuLinux
+% ... or you can get a precompiled library for libopenhmd.so from:
 %
-% Follow instructions in the accompanying Readme.txt files.
+% For RaspberryPi/Raspbian: https://github.com/Psychtoolbox-3/MiscStuff/tree/master/OpenHMD32BitRaspbianARMv7
+%
+% For 64-Bit Intel/Ubuntu:  https://github.com/Psychtoolbox-3/MiscStuff/tree/master/OpenHMD64BitIntelUbuntuLinux
+%
+% Follow the setup instructions in the accompanying Readme.txt files if you use the
+% precompiled libraries.
 %
 % libopenhmd.so in turn needs libhidapi-libusb.so to be installed in
-% a similar path. On Debian GNU/Linux based systems you can install HIDAPI
-% via the package libhidapi-libusb0 (apt-get install libhidapi-libusb0).
+% a similar path. On Debian GNU/Linux based systems like Ubuntu, you can install
+% this via the package libhidapi-libusb0 (apt-get install libhidapi-libusb0).
+%
+% On Ubuntu 20.04-LTS and later, or Debian 11 and later, you can also get the library
+% via a simple "sudo apt install libopenhmd0" for version 0.3 of the library.
+%
+% Regarding Linux 4.16 and later:
+%
+% Note that on some HMD's, e.g., the Oculus Rift models, this driver will only work
+% on a multi-X-Screen setup, where a dedicated X-Screen (typically X-Screen 1) is
+% created, with the video output of the HMD assigned as only output to that X-Screen.
+% Single-X-Screen operation will be unworkable in practice.
+%
+% The xorg.conf file needed for such a configuration must be manually created for your
+% setup. The "Monitor" section for the video output representing the HMD must have this
+% line included:
+%
+% Option "Enable" "on"
+%
+% E.g., if the video output with the HMD has the name "HDMI-A-0", the relevant
+% section would look like this:
+%
+% Section "Monitor"
+%   Identifier    "HDMI-A-0"
+%   Option        "Enable" "on"
+% EndSection
+%
+% An example file demonstrating this can be found in the PsychtoolboxRoot() folder,
+% under the following name:
+%
+% Psychtoolbox/PsychHardware/LinuxX11ExampleXorgConfs/xorg.conf_DualXScreen_OculusRift_amdgpu.conf
+%
+% Regarding Linux 4.15 and earlier, the following may apply instead, at least for
+% the Oculus Rift CV1 and later Oculus HMD's, maybe also for other models from
+% other vendors:
 %
 % From the same URL above, you need to get openhmdkeepalivedaemon, an executable
 % file, and make sure it gets started during system boot of your machine. This so
@@ -83,6 +126,16 @@ function varargout = PsychOpenHMDVR(cmd, varargin)
 % a pulse-type display instead of a hold-type display if possible. This has
 % no effect at the moment for this driver and its supported devices.
 %
+% 'ForceSize=widthxheight' = Enforce a specific fixed size of the stimulus
+% image buffer in pixels, overriding the recommmended value by the runtime,
+% e.g., 'ForceSize=2200x1200' for a 2200 pixels wide and 1200 pixels high
+% image buffer. By default the driver will choose values that provide good
+% quality for the given HMD display device, which can be scaled up or down
+% with the optional 'pixelsPerDisplay' parameter for a different quality vs.
+% performance tradeoff in the function PsychOpenXR('SetupRenderingParameters');
+% The specified values are clamped against the maximum values supported by
+% the given hardware + driver combination.
+%
 % 'PerEyeFOV' = Request use of per eye individual and asymmetric fields of view even
 % when the 'basicTask' was selected to be 'Monoscopic' or 'Stereoscopic'. This allows
 % for wider field of view in these tasks, but requires the usercode to adapt to these
@@ -92,8 +145,10 @@ function varargout = PsychOpenHMDVR(cmd, varargin)
 % 'FastResponse' = Try to switch images with minimal delay and fast
 % pixel switching time. This does nothing on this driver at the moment.
 %
-% 'TimingSupport' = Support some hardware specific means of timestamping
-% or latency measurements. This does nothing on this driver at the moment.
+% 'TimingSupport' = Use high precision and reliability timing for presentation.
+% Not really needed, as this driver always uses high precision timing and
+% timestamping, at least if you present to your HMD via a dedicated
+% X-Screen on a multi-X-Screen setup under Linux X11.
 %
 % 'TimeWarp' = Enable per eye image 2D timewarping via prediction of eye
 % poses at scanout time. This mostly only makes sense for head-tracked 3D
@@ -134,8 +189,6 @@ function varargout = PsychOpenHMDVR(cmd, varargin)
 % of the OVR.ControllerType_XXX flags described in 'GetInputState'.
 % This does not detect if controllers are hot-plugged or unplugged after
 % the HMD was opened. Iow. only probed at 'Open'.
-% As the current OpenHMD driver does not support dedicated controllers at the
-% moment, this always returns 0.
 %
 %
 % info = PsychOpenHMDVR('GetInfo', hmd);
@@ -155,7 +208,7 @@ function varargout = PsychOpenHMDVR(cmd, varargin)
 % The returned struct may contain more information, but the fields mentioned
 % above are the only ones guaranteed to be available over the long run. Other
 % fields may disappear or change their format and meaning anytime without
-% warning.
+% warning. See 'help PsychVRHMD' for more detailed info about available fields.
 %
 %
 % isSupported = PsychOpenHMDVRCore('Supported');
@@ -205,6 +258,18 @@ function varargout = PsychOpenHMDVR(cmd, varargin)
 % other input elements of the specified 'controllerType'. It has the following fields:
 %
 % 'Valid' = 1 if 'input' contains valid results, 0 if input status is invalid/unavailable.
+% 'ActiveInputs' = Bitmask defining which of the following struct elements do contain
+% meaningful input from actual physical input source devices. This is a more fine-grained
+% reporting of what 'Valid' conveys, split up into categories. The following flags will be
+% logical or'ed together if the corresponding input category is valid, ie. provided with
+% actual input data from some physical input source element, controller etc.:
+%
+% +1  = 'Buttons' gets input from some real buttons or switches.
+% +2  = 'Touches' gets input from some real touch/proximity sensors or gesture recognizers.
+% +4  = 'Trigger' gets input from some real analog trigger sensor or gesture recognizer.
+% +8  = 'Grip' gets input from some real analog grip sensor or gesture recognizer.
+% +16 = 'Thumbstick' gets input from some real thumbstick, joystick or trackpad or similar 2D sensor.
+%
 % 'Time' Time of last input state change of controller.
 % 'Buttons' Vector with button state on the controller, similar to the 'keyCode'
 % vector returned by KbCheck() for regular keyboards. Each position in the vector
@@ -213,9 +278,10 @@ function varargout = PsychOpenHMDVR(cmd, varargin)
 %
 %
 % pulseEndTime = PsychOpenHMDVR('HapticPulse', hmd, controllerType [, duration=2.5][, freq=1.0][, amplitude=1.0]);
-% - Fake triggering a haptic feedback pulse. This does nothing, but return a made up
-% but consistent 'pulseEndTime', as this OpenHMD driver currently does not support
-% haptic feedback.
+% - Trigger a haptic feedback pulse, some controller vibration, on the specified 'controllerType'
+% associated with the specified 'hmd'. 'duration' is pulse duration in seconds, by default a maximum
+% of 2.5 seconds is executed. 'freq' is normalized frequency in range 0.0 - 1.0. A value of 0 will
+% disable an ongoing pulse.'amplitude' is the amplitude of the vibration in normalized 0.0 - 1.0 range.
 %
 %
 % state = PsychOpenHMDVRCore('PrepareRender', hmd [, userTransformMatrix][, reqmask=1][, targetTime]);
@@ -285,7 +351,7 @@ function varargout = PsychOpenHMDVR(cmd, varargin)
 %      reference frame. They are the inverses of state.modelView{}. These
 %      matrices can be directly used to define cameras for rendering of complex
 %      3D scenes with the Horde3D 3D engine. Left- and right eye matrices are
-%      contained in state.cameraView{1} and {2}.
+%      contained in state.cameraView{1} and state.cameraView{2}.
 %
 %      Additionally tracked/predicted head pose is returned in state.localHeadPoseMatrix
 %      and the global head pose after application of the 'userTransformMatrix' is
@@ -430,7 +496,7 @@ function varargout = PsychOpenHMDVR(cmd, varargin)
 % Currently not implemented / supported. Does nothing.
 %
 %
-% PsychOpenHMDVR('SetHSWDisplayDismiss', hmd [, dismissTypes=1+2]);
+% PsychOpenHMDVR('SetHSWDisplayDismiss', hmd [, dismissTypes=1+2+4]);
 % - Set how the user can dismiss the "Health and safety warning display".
 % 'dismissTypes' can be -1 to disable the HSWD, or a value >= 0 to show
 % the HSWD until a timeout and or until the user dismisses the HSWD.
@@ -439,6 +505,7 @@ function varargout = PsychOpenHMDVR(cmd, varargin)
 % +0 = Display until timeout, if any. Will wait forever if there isn't any timeout!
 % +1 = Dismiss via keyboard keypress.
 % +2 = Dismiss via mouse click or mousepad tap.
+% +4 = Dismiss via press of a button on a connected VR controller, e.g., touch controller.
 %
 %
 % [bufferSize, imagingFlags, stereoMode] = PsychOpenHMDVR('GetClientRenderingParameters', hmd);
@@ -458,7 +525,7 @@ function varargout = PsychOpenHMDVR(cmd, varargin)
 % needed.
 %
 %
-% [winRect, ovrfbOverrideRect, ovrSpecialFlags] = PsychOpenHMDVR('OpenWindowSetup', hmd, screenid, winRect, ovrfbOverrideRect, ovrSpecialFlags);
+% [winRect, ovrfbOverrideRect, ovrSpecialFlags, ovrMultiSample, screenid] = PsychOpenHMDVR('OpenWindowSetup', hmd, screenid, winRect, ovrfbOverrideRect, ovrSpecialFlags, ovrMultiSample);
 % - Compute special override parameters for given input/output arguments, as needed
 % for a specific HMD. Take other preparatory steps as needed, immediately before the
 % Screen('OpenWindow') command executes. This is called as part of PsychImaging('OpenWindow'),
@@ -560,7 +627,7 @@ if cmd == 0
     glBindTexture(GL.TEXTURE_2D, hmd{handle}.inTex(i));
     glBegin(GL.QUADS);
     if i == 1
-      ipd = -hmd{handle}.ipd;
+      ipd = -hmd{handle}.ipd / 2;
       glTexCoord2d(ipd + 0,  0);
       glVertex3d(  -1, -1, 0);
       glTexCoord2d(ipd + 1,  0);
@@ -570,7 +637,7 @@ if cmd == 0
       glTexCoord2d(ipd + 0,  1);
       glVertex3d(  -1,  1, 0);
     else
-      ipd = +hmd{handle}.ipd;
+      ipd = +hmd{handle}.ipd / 2;
       glTexCoord2d(ipd + 0,  0);
       glVertex3d(   0, -1, 0);
       glTexCoord2d(ipd + 1,  0);
@@ -614,6 +681,9 @@ if strcmpi(cmd, 'PrepareRender')
     error('PsychOpenHMDVR:PrepareRender: Specified handle does not correspond to an open HMD!');
   end
 
+  % Make local working copy of current hmd total state:
+  myhmd = hmd{myhmd.handle};
+
   % Get 'userTransformMatrix' if any:
   if length(varargin) >= 2 && ~isempty(varargin{2})
     userTransformMatrix = varargin{2};
@@ -643,8 +713,85 @@ if strcmpi(cmd, 'PrepareRender')
     targetTime = winfo.LastVBLTime + 1.5 * hmd{myhmd.handle}.videoRefreshDuration;
   end
 
+  % Eyetracking data via SRAnipalMex requested?
+  if bitand(reqmask, 4) && bitand(myhmd.eyeTrackingSupported, 1024)
+    % Get latest sample from SRAnipalMex:
+    srLastSample = [];
+    srCalibNeeded = 0;
+    [srSample, srNeedCalib, srImprove] = SRAnipalMex(5);
+    srCalibNeeded = srCalibNeeded + srNeedCalib;
+    while ~isempty(srSample)
+      srLastSample = srSample;
+      [srSample, srNeedCalib, srImprove] = SRAnipalMex(5);
+      srCalibNeeded = srCalibNeeded + srNeedCalib;
+    end
+
+    while isempty(srLastSample)
+      [srLastSample, srNeedCalib, srImprove] = SRAnipalMex(5);
+      srCalibNeeded = srCalibNeeded + srNeedCalib;
+    end
+
+    if PsychOpenHMDVRCore('Verbosity') > 2
+      if srCalibNeeded
+        fprintf('PsychOpenHMDVR: At time %f seconds - Eyetracker suggests a calibration might be needed.\n', GetSecs);
+      end
+
+      for i=1:length(srImprove)
+        fprintf('PsychOpenHMDVR: Eyetracker suggests tracking improvement %i\n', srImprove(i));
+      end
+    end
+
+    % Convert time in msecs to GetSecs time in seconds:
+    [gaze(1).Time, gaze(2).Time, gaze(3).Time] = deal(srLastSample(2) / 1000);
+
+    % Map eye openess to tracked status:
+    if srLastSample(9) > 0 && norm(srLastSample(3:5)) > 0.1
+        gaze(1).Status = 3; %#ok<*AGROW>
+    else
+        gaze(1).Status = 1;
+    end
+
+    if srLastSample(19) > 0 && norm(srLastSample(13:15)) > 0.1
+        gaze(2).Status = 3; %#ok<*AGROW>
+    else
+        gaze(2).Status = 1;
+    end
+
+    if gaze(1).Status == 3 && gaze(2).Status == 3
+        gaze(3).Status = 3; %#ok<*AGROW>
+    else
+        gaze(3).Status = 1;
+    end
+
+    % Swap eye center / translation between left eye and right eye, to compensate
+    % for a bug in the SRAnipal runtime on at least HTC Vive Pro Eye:
+    gaze(1).GazePose = [srLastSample(16:18) / 1000, srLastSample(3:5)];
+    gaze(2).GazePose = [srLastSample(6:8) / 1000, srLastSample(13:15)];
+
+    % Need to switch sign of x-axis position of cyclops eye due to HTC eye switching bug above!
+    srLastSample(26) = -srLastSample(26);
+    gaze(3).GazePose = [srLastSample(26:28) / 1000, srLastSample(23:25)];
+
+    gaze(1).gazeEyeOpening = srLastSample(9);
+    gaze(2).gazeEyeOpening = srLastSample(19);
+    gaze(3).gazeEyeOpening = srLastSample(29);
+
+    gaze(1).gazeEyePupilDiameter = srLastSample(10);
+    gaze(2).gazeEyePupilDiameter = srLastSample(20);
+    gaze(3).gazeEyePupilDiameter = srLastSample(30);
+
+    % Pupil position in normalized 2D sensor space:
+    gaze(1).sensor2D = srLastSample(11:12);
+    gaze(2).sensor2D = srLastSample(21:22);
+    gaze(3).sensor2D = srLastSample(31:32);
+  else
+    gaze = [];
+  end
+
   % Get predicted head pose for targetTime:
-  state = PsychOpenHMDVRCore('GetTrackingState', myhmd.handle, targetTime);
+  [state, touch] = PsychOpenHMDVRCore('GetTrackingState', myhmd.handle, targetTime);
+
+  hmd{myhmd.handle}.state = state;
 
   % Always return basic tracking status:
   result.tracked = state.Status;
@@ -673,6 +820,24 @@ if strcmpi(cmd, 'PrepareRender')
     % Compute inverse matrices, useable as OpenGL GL_MODELVIEW matrices for rendering:
     result.modelView{1} = inv(result.cameraView{1});
     result.modelView{2} = inv(result.cameraView{2});
+
+    if 0 % Not usable with current OpenHMD versions yet, so spare us the wasted cpu cycles.
+    if ~isempty(state.HeadLinearSpeed)
+      result.HeadLinearSpeed = state.HeadLinearSpeed;
+    end
+
+    if ~isempty(state.HeadAngularSpeed)
+      result.HeadAngularSpeed = state.HeadAngularSpeed;
+    end
+
+    if ~isempty(state.HeadLinearAcceleration)
+      result.HeadLinearAcceleration = state.HeadLinearAcceleration;
+    end
+
+    if ~isempty(state.HeadAngularAcceleration)
+      result.HeadAngularAcceleration = state.HeadAngularAcceleration;
+    end
+    end
   end
 
   % Want matrices with tracked position and orientation of touch controllers ~ users hands?
@@ -680,21 +845,136 @@ if strcmpi(cmd, 'PrepareRender')
     % Yes: We can't do this on current OpenHMD, so fake stuff:
 
     for i=1:2
-      result.handStatus(i) = 0;
+      result.handStatus(i) = touch(i).Status;
 
       % Bonus feature: HandPoses as 7 component translation + orientation quaternion vectors:
-      result.handPose{i} = [0, 0, 0, 0, 0, 0, 1];
+      result.handPose{i} = touch(i).HandPose;;
 
       % Convert hand pose vector to 4x4 OpenGL right handed reference frame matrix:
       % In our untracked case, simply an identity matrix:
-      result.localHandPoseMatrix{i} = diag([1,1,1,1]);
+      result.localHandPoseMatrix{i} = eyePoseToCameraMatrix(result.handPose{i});
 
       % Premultiply usercode provided global transformation matrix - here use as is:
-      result.globalHandPoseMatrix{i} = userTransformMatrix;
+      result.globalHandPoseMatrix{i} = userTransformMatrix * result.localHandPoseMatrix{i};
 
       % Compute inverse matrix, maybe useable for collision testing / virtual grasping of virtual objects:
       % Provides a transform that maps absolute geometry into geometry as "seen" from the pov of the hand.
       result.globalHandPoseInverseMatrix{i} = inv(result.globalHandPoseMatrix{i});
+    end
+  end
+
+  if bitand(reqmask, 4)
+    % Store raw gaze data provided by eyetracker driver in gazeRaw, can be empty:
+    result.gazeRaw = gaze;
+
+    if ~isempty(gaze)
+      % Process each entry:
+      for i = 1:length(gaze)
+        result.gazeStatus(i) = gaze(i).Status;
+        result.gazeTime(i) = gaze(i).Time;
+        result.gazeConfidence(i) = NaN;
+        result.gazeEyeOpening(i) = NaN;
+        result.gazeEyePupilDiameter(i) = NaN;
+        result.gazeEyeConvergenceDistance = NaN;
+
+        gazeM = diag([1 1 1 1]);
+
+        % Valid, tracked sample from SRAnipalMex available?
+        if gaze(i).Status == 3
+          % Override gazeM matrix with a fake matrix, based on SRAnipal data.
+          % Only columns 3 and 4 for z-axis and position are valid, just enough:
+          gazeM(1:3, 4) = gaze(i).GazePose(1:3);
+          gazeM(1:3, 3) = gaze(i).GazePose(4:6);
+
+          % Mysterious negation hack needed with SRAnipal:
+          gazeM(1:3, 3) = -gazeM(1:3, 3);
+        end
+
+        % Store estimated eye opening and pupil diameter:
+        result.gazeEyeOpening(i) = gaze(i).gazeEyeOpening;
+        result.gazeEyePupilDiameter(i) = gaze(i).gazeEyePupilDiameter;
+
+        % Distance to point of eye convergence - ie. to point of fixation:
+        result.gazeEyeConvergenceDistance = srLastSample(33);
+
+        % Invert the y-Rotation subvector: Why? I don't know! But without
+        % it, vertical gaze vector is wrong with the HTC Vive Pro Eye.
+        % Maybe a HTC SRAnipal runtime bug?
+        gazeM(2, 1:3) = -gazeM(2, 1:3);
+
+        % Disabled, as impossible to make compatible with other implementations:
+        % result.gazeLocalMatNonPortable{i} = gazeM;
+
+        % Compute gaze ray in XR device (HMD) local reference frame:
+        result.gazeRayLocal{i}.gazeC = gazeM(1:3, 4);
+        result.gazeRayLocal{i}.gazeD = gazeM(1:3, 3);
+
+        % VR display device (HMD) tracking info available?
+        if bitand(reqmask, 1)
+          % Compute global gaze orientation matrix and gaze ray:
+          gazeM = result.globalHeadPoseMatrix * gazeM;
+          % Disabled, see gazeLocalMatNonPortable result.gazeGlobalMatNonPortable{i} = gazeM;
+          result.gazeRayGlobal{i}.gazeC = gazeM(1:3, 4);
+          result.gazeRayGlobal{i}.gazeD = gazeM(1:3, 3);
+        end
+
+        % Try to compute 2D gaze points in onscreen window coordinates:
+        handle = myhmd.handle;
+        [winw, winh] = Screen('WindowSize', hmd{handle}.win);
+
+        % Get local gaze ray definition:
+        tv = result.gazeRayLocal{i}.gazeC;
+        dv = result.gazeRayLocal{i}.gazeD;
+
+        % Define plane of projectionLayer to be -10 meters away from the
+        % optical center of the virtual camera, ie. translated by MT. Why
+        % 10 meters? Because small values give numerical instability and
+        % wrong results. MT defines shift of 10 meters along negative
+        % z-axis of camera reference frame:
+        clipNear = 10;
+        MT = diag([1 1 1 1]);
+        MT(3,4) = -clipNear;
+
+        % Left eye view, mono view or cyclops view - anything other than right eye?
+        if i ~= 2
+          % Left eye/projectionLayer field of view:
+          fov = hmd{handle}.fovL;
+          MV = hmd{myhmd.handle}.eyeShiftMatrix{1} * MT;
+        else
+          % Right eye/projectionLayer field of view:
+          fov = hmd{handle}.fovR;
+          MV = hmd{myhmd.handle}.eyeShiftMatrix{2} * MT;
+        end
+
+        % Solve ray - plane intersection between gaze ray and projectionLayer plane:
+        GM = [MV(1:3, 1), MV(1:3, 2), -dv];
+        GB = tv - MV(1:3, 4);
+        gaze3D = (GM \ GB)'; % Faster and more accurate implementation of gaze3D = (inv(GM) * GB)';
+
+        % Compute left/right/up/down distance in projectionLayer plane
+        % away from (0,0) 2D center, in meters. Instead of the real
+        % plane, we use a bigger plane that is 10 meters shifted away, to
+        % avoid numerical problems down the road. This takes the
+        % asymetric view frustum of projectionLayers into account:
+        lw = tand(-fov(1)) * clipNear;
+        rw = tand(+fov(2)) * clipNear;
+        th = tand(+fov(3)) * clipNear;
+        bh = tand(-fov(4)) * clipNear;
+
+        % Width and height of plane in meters:
+        aw = rw - lw;
+        ah = th - bh;
+
+        % Map to normalized 2D (x,y) position in view, range [0;1] inside views area:
+        gaze2D = (gaze3D(1:2) - [lw, bh]) ./ [aw, ah];
+        gaze2D(1) = gaze2D(1) * winw;
+        gaze2D(2) = (1 - gaze2D(2)) * winh;
+
+        % Assign as output:
+        result.gazePos{i} = gaze2D;
+      end
+    else
+      warning('PsychOpenHMDVR:PrepareRender: Eye gaze tracking data requested, but gaze tracking not supported or enabled!');
     end
   end
 
@@ -772,31 +1052,7 @@ if strcmpi(cmd, 'GetInputState')
     error('PsychOpenHMDVR:GetInputState: Required ''controllerType'' argument missing.');
   end
 
-  rc.Valid = 1;
-
-  [anykey, rc.Time, keyCodes] = KbCheck(-1);
-  rc.Buttons = zeros(1, 32);
-  if anykey
-    rc.Buttons(OVR.Button_A) = keyCodes(KbName('a'));
-    rc.Buttons(OVR.Button_B) = keyCodes(KbName('b'));
-    rc.Buttons(OVR.Button_X) = keyCodes(KbName('x'));
-    rc.Buttons(OVR.Button_Y) = keyCodes(KbName('y'));
-    rc.Buttons(OVR.Button_Back) = keyCodes(KbName('BackSpace'));
-    rc.Buttons(OVR.Button_Enter) = any(keyCodes(KbName('Return')));
-    rc.Buttons(OVR.Button_Right) = keyCodes(KbName('RightArrow'));
-    rc.Buttons(OVR.Button_Left) = keyCodes(KbName('LeftArrow'));
-    rc.Buttons(OVR.Button_Up) = keyCodes(KbName('UpArrow'));
-    rc.Buttons(OVR.Button_Down) = keyCodes(KbName('DownArrow'));
-    rc.Buttons(OVR.Button_VolUp) = keyCodes(KbName('F12'));
-    rc.Buttons(OVR.Button_VolDown) = keyCodes(KbName('F11'));
-    rc.Buttons(OVR.Button_RShoulder) = keyCodes(KbName('RightShift'));
-    rc.Buttons(OVR.Button_LShoulder) = keyCodes(KbName('LeftShift'));
-    rc.Buttons(OVR.Button_Home) = keyCodes(KbName('Home'));
-    rc.Buttons(OVR.Button_RThumb) = any(keyCodes(KbName({'RightControl', 'RightAlt'})));
-    rc.Buttons(OVR.Button_LThumb) = any(keyCodes(KbName({'LeftControl', 'LeftAlt'})));
-  end
-
-  varargout{1} = rc;
+  varargout{1} = PsychOpenHMDVRCore('GetInputState', myhmd.handle, double(varargin{2}));
 
   return;
 end
@@ -812,11 +1068,7 @@ if strcmpi(cmd, 'HapticPulse')
     error('PsychOpenHMDVR:HapticPulse: Required ''controllerType'' argument missing.');
   end
 
-  if length(varargin) >= 3 && ~isempty(varargin{3}) && varargin{3} < 2.5
-    varargout{1} = WaitSecs(varargin{3});
-  else
-    varargout{1} = GetSecs + 2.5;
-  end
+  varargout{1} = PsychOpenHMDVRCore('HapticPulse', myhmd.handle, double(varargin{2}), varargin{3:end});
 
   return;
 end
@@ -923,8 +1175,8 @@ if strcmpi(cmd, 'SetHSWDisplayDismiss')
 
   % Method of dismissing HSW display:
   if length(varargin) < 2 || isempty(varargin{2})
-    % Default is keyboard or mouse click:
-    hmd{myhmd.handle}.hswdismiss = 1 + 2;
+    % Default is keyboard or mouse click or controller button press:
+    hmd{myhmd.handle}.hswdismiss = 1 + 2 + 4;
   else
     hmd{myhmd.handle}.hswdismiss = varargin{2};
   end
@@ -934,7 +1186,8 @@ end
 
 % Open a HMD:
 if strcmpi(cmd, 'Open')
-  [handle, modelName, panelWidth, panelHeight] = PsychOpenHMDVRCore('Open', varargin{:});
+  [handle, modelName, panelWidth, panelHeight, controllerTypes, controllerFlags] = PsychOpenHMDVRCore('Open', varargin{:});
+  [~, ~, ~, ~, ~, ~, ~, pw, ph] = PsychOpenHMDVRCore('GetUndistortionParameters', handle, 0);
 
   newhmd.handle = handle;
   newhmd.driver = @PsychOpenHMDVR;
@@ -944,18 +1197,42 @@ if strcmpi(cmd, 'Open')
   newhmd.modelName = modelName;
   newhmd.panelWidth = panelWidth;
   newhmd.panelHeight = panelHeight;
+  newhmd.panelWidthMM = round(pw * 1000);
+  newhmd.panelHeightMM = round(ph * 1000);
   newhmd.separateEyePosesSupported = 0;
-  newhmd.controllerTypes = 0;
-  newhmd.VRControllersSupported = 0;
-  newhmd.handTrackingSupported = 0;
-  newhmd.hapticFeedbackSupported = 0;
+  newhmd.controllerTypes = controllerTypes;
+  if controllerTypes
+    newhmd.VRControllersSupported = 1;
+  else
+    newhmd.VRControllersSupported = 0;
+  end
+
+  if bitand(controllerFlags, 1+2)
+    newhmd.handTrackingSupported = 1;
+  else
+    newhmd.handTrackingSupported = 0;
+  end
+
+  if bitand(controllerFlags, 4)
+    newhmd.hapticFeedbackSupported = 1;
+  else
+    newhmd.hapticFeedbackSupported = 0;
+  end
+
+  newhmd.eyeTrackingSupported = 0;
+  newhmd.needEyeTracking = 0;
+
+  % Eye gaze tracking via SRAnipal on MS-Windows on HTC Vive Pro Eye etc. supported?
+  if IsWin && exist('SRAnipalMex', 'file') && ~isempty(strfind(newhmd.modelName, 'Vive'))
+    newhmd.eyeTrackingSupported = 1;
+  end
 
   % Default autoclose flag to "no autoclose":
   newhmd.autoclose = 0;
 
   % By default allow user to dismiss HSW display via key press
-  % or mouse click:
-  newhmd.hswdismiss = 1 + 2;
+  % or mouse click or controller button press:
+  newhmd.hswdismiss = 1 + 2 + 4;
 
   % Setup basic task/requirement/quality specs to "nothing":
   newhmd.basicQuality = 0;
@@ -1014,6 +1291,7 @@ if strcmpi(cmd, 'Open')
     OVR.Button_Private = [OVR.Button_VolUp, OVR.Button_VolDown, OVR.Button_Home];
     OVR.Button_RMask = [OVR.Button_A, OVR.Button_B, OVR.Button_RThumb, OVR.Button_RShoulder];
     OVR.Button_LMask = [OVR.Button_X, OVR.Button_Y, OVR.Button_LThumb, OVR.Button_LShoulder, OVR.Button_Enter];
+    OVR.Button_MicMute = 1 + log2(hex2dec('02000000')); % PTB extension, not in original OVR spec.
 
     OVR.Touch_A = OVR.Button_A;
     OVR.Touch_B = OVR.Button_B;
@@ -1065,6 +1343,26 @@ if strcmpi(cmd, 'Open')
   % Return device struct:
   varargout{1} = newhmd;
   varargout{2} = modelName;
+
+  if IsLinux && ~IsWayland
+    pause(4);
+    screenid = max(Screen('Screens'));
+    [rc, outputs] = system(sprintf('xrandr --screen %i | grep connected | cut -d '' '' -f1', screenid));
+    pause(1);
+    if rc == 0
+      while ~isempty(outputs)
+        [output, outputs] = strtok(outputs);
+        if ~isempty(output)
+          system(sprintf('xrandr --screen %i --output %s --set non-desktop 0', screenid, output))
+          %pause(1);
+          %system(sprintf('xrandr --screen %i --output %s --auto', screenid, output))
+        end
+      end
+
+      pause(2);
+      clear Screen;
+    end
+  end
 
   return;
 end
@@ -1121,6 +1419,14 @@ if strcmpi(cmd, 'Close')
     if (length(hmd) >= myhmd.handle) && (myhmd.handle > 0) && hmd{myhmd.handle}.open
       PsychOpenHMDVRCore('Close', myhmd.handle);
       hmd{myhmd.handle}.open = 0;
+
+      % Was SRAnipalMex eyetracking active?
+      if bitand(hmd{myhmd.handle}.eyeTrackingSupported, 1024) && hmd{myhmd.handle}.needEyeTracking
+        % Stop tracking:
+        SRAnipalMex(3);
+        % Shutdown tracker connection
+        SRAnipalMex(1);
+      end
     end
   else
     % Shutdown whole driver:
@@ -1132,15 +1438,19 @@ if strcmpi(cmd, 'Close')
 end
 
 if strcmpi(cmd, 'IsHMDOutput')
-  myhmd = varargin{1}; %#ok<NASGU>
+  myhmd = varargin{1};
   scanout = varargin{2};
 
-  % Is this an output with a resolution matching HMD panel resolution?
+  % Does physical display size from EDID match the one reported by the HMD?
+  mmmatch = (abs(myhmd.panelWidthMM - scanout.displayWidthMM) < 5 && abs(myhmd.panelHeightMM - scanout.displayHeightMM) < 5) || ...
+            (abs(myhmd.panelWidthMM - scanout.displayHeightMM) < 5  && abs(myhmd.panelHeightMM - scanout.displayWidthMM) < 5);
+
+  % Is this an output with a resolution or physical size matching HMD panel resolution or size?
   % Assumption here is that it is a tilted panel in portrait mode in case of
   % the Rift DK1/DK2, but a non-tilted panel in landscape mode on other HMDs,
   % e.g., the Rift CV1:
   if (~isempty(strfind(myhmd.modelName, '(DK')) && (scanout.width == myhmd.panelHeight) && (scanout.height == myhmd.panelWidth || scanout.height == 948)) || ...
-     (isempty(strfind(myhmd.modelName, '(DK')) && (scanout.width == myhmd.panelWidth) && (scanout.height == myhmd.panelHeight))
+     (isempty(strfind(myhmd.modelName, '(DK')) && (scanout.width == myhmd.panelWidth) && (scanout.height == myhmd.panelHeight)) || mmmatch
     varargout{1} = 1;
   else
     varargout{1} = 0;
@@ -1159,14 +1469,6 @@ if strcmpi(cmd, 'SetBasicQuality')
     PsychOpenHMDVRCore('SetLowPersistence', handle, 1);
   else
     PsychOpenHMDVRCore('SetLowPersistence', handle, 0);
-  end
-
-  % Dynamic prediction enables advanced head tracking prediction and eye timewarping:
-  if ~isempty(strfind(hmd{handle}.basicRequirements, 'TimingSupport')) || ...
-     ~isempty(strfind(hmd{handle}.basicTask, 'Tracked3DVR'))
-    %PsychOpenHMDVRCore('SetDynamicPrediction', handle, 1);
-  else
-    %PsychOpenHMDVRCore('SetDynamicPrediction', handle, 0);
   end
 
   return;
@@ -1209,6 +1511,23 @@ if strcmpi(cmd, 'SetLowPersistence')
   if (length(varargin) >= 2) && ~isempty(varargin{2})
     PsychOpenHMDVRCore('SetLowPersistence', myhmd.handle, varargin{2});
   end
+
+  return;
+end
+
+if strcmpi(cmd, 'GetStaticRenderParameters')
+  myhmd = varargin{1};
+
+  if ~PsychOpenHMDVR('IsOpen', myhmd)
+    error('GetStaticRenderParameters: Passed in handle does not refer to a valid and open HMD.');
+  end
+
+  % Retrieve projL and projR from driver:
+  [varargout{1}, varargout{2}] = PsychOpenHMDVRCore('GetStaticRenderParameters', myhmd.handle, varargin{2:end});
+
+  % Get cached values of fovL and fovR, for compatibility with OpenXR driver:
+  varargout{3} = deg2rad([-hmd{myhmd.handle}.fovL(1), hmd{myhmd.handle}.fovL(2), hmd{myhmd.handle}.fovL(3), -hmd{myhmd.handle}.fovL(4)]);
+  varargout{4} = deg2rad([-hmd{myhmd.handle}.fovR(1), hmd{myhmd.handle}.fovR(2), hmd{myhmd.handle}.fovR(3), -hmd{myhmd.handle}.fovR(4)]);
 
   return;
 end
@@ -1291,6 +1610,37 @@ if strcmpi(cmd, 'SetupRenderingParameters')
     [hmd{myhmd.handle}.rbwidth, hmd{myhmd.handle}.rbheight, hmd{myhmd.handle}.fovR] = PsychOpenHMDVRCore('GetFovTextureSize', myhmd.handle, 1, metersPerTanAngleAtCenter, fov, varargin{7:end});
   end
 
+  % Set twice the HMD panel resolution as reasonable maximum for the renderbuffers:
+  hmd{myhmd.handle}.maxrbwidth = 2 * hmd{myhmd.handle}.panelWidth;
+  hmd{myhmd.handle}.maxrbheight = 2 * hmd{myhmd.handle}.panelHeight;
+
+  % Forced override size of framebuffer provided?
+  rbOvrSize = strfind(basicRequirements, 'ForceSize=');
+  if ~isempty(rbOvrSize)
+    rbOvrSize = sscanf(basicRequirements(min(rbOvrSize):end), 'ForceSize=%ix%i');
+    if length(rbOvrSize) ~= 2 || ~isvector(rbOvrSize) || ~isreal(rbOvrSize)
+      sca;
+      error('SetupRenderingParameters(): Invalid ''ForceSize='' string in ''basicRequirements'' specified! Must be of the form ''ForceSize=widthxheight'' pixels.');
+    end
+
+    % Clamp to valid range and assign:
+    hmd{myhmd.handle}.rbwidth = max(1, min(ceil(rbOvrSize(1) * pixelsPerDisplay), hmd{myhmd.handle}.maxrbwidth));
+    hmd{myhmd.handle}.rbheight = max(1, min(ceil(rbOvrSize(2) * pixelsPerDisplay), hmd{myhmd.handle}.maxrbheight));
+    if hmd{myhmd.handle}.rbwidth ~= rbOvrSize(1) || hmd{myhmd.handle}.rbheight ~= rbOvrSize(2)
+        warning('SetupRenderingParameters(): Had to clamp ''ForceSize=widthxheight'' requested pixelbuffer size to fit into valid range! Result may look funky.');
+    end
+  end
+
+  % Eye gaze tracking requested?
+  if ~isempty(strfind(basicRequirements, 'Eyetracking'))
+    if ~hmd{myhmd.handle}.eyeTrackingSupported
+      warning('SetupRenderingParameters: ''Eyetracking'' requested in ''basicRequirements'', but this VR system does not support eye tracking!');
+      hmd{myhmd.handle}.needEyeTracking = 0;
+    else
+      hmd{myhmd.handle}.needEyeTracking = 1;
+    end
+  end
+
   return;
 end
 
@@ -1332,39 +1682,62 @@ if strcmpi(cmd, 'GetPanelFitterParameters')
   return;
 end
 
-% [winRect, ovrfbOverrideRect, ovrSpecialFlags] = PsychOpenHMDVR('OpenWindowSetup', hmd, screenid, winRect, ovrfbOverrideRect, ovrSpecialFlags);
+% [winRect, ovrfbOverrideRect, ovrSpecialFlags, ovrMultiSample, screenid] = PsychOpenHMDVR('OpenWindowSetup', hmd, screenid, winRect, ovrfbOverrideRect, ovrSpecialFlags, ovrMultiSample);
 if strcmpi(cmd, 'OpenWindowSetup')
   myhmd = varargin{1};
   screenid = varargin{2};
   winRect = varargin{3};
   ovrfbOverrideRect = varargin{4};
   ovrSpecialFlags = varargin{5};
+  ovrMultiSample = varargin{6};
 
   % Override winRect for the OpenHMD dummy HMD device:
   if strcmp(myhmd.modelName, 'Dummy Device') || strcmp(myhmd.modelName, 'External Device')
     winRect = [0, 0, myhmd.panelWidth, myhmd.panelHeight];
-  end
+  elseif IsWin
+    % MS-Windows:
 
-  % Yes. Trying to display on a screen with more than one video output?
-  if isempty(winRect) && (Screen('ConfigureDisplay', 'NumberOutputs', screenid) > 1)
-    % Yes. Not good, as this will impair graphics performance and timing a lot.
-    % Warn about this, then try to at least position the onscreen window on the
-    % right output.
-    fprintf('PsychOpenHMDVR-WARNING: You are requesting display to a VR HMD on a screen with multiple active video outputs.\n');
-    fprintf('PsychOpenHMDVR-WARNING: This will impair visual stimulation timing and cause decreased VR performance!\n');
-    fprintf('PsychOpenHMDVR-WARNING: I strongly recommend only activating one output on the HMD screen - the HMD output on the screen.\n');
-    fprintf('PsychOpenHMDVR-WARNING: On Linux with X11 X-Server, you should create a separate X-Screen for the HMD.\n');
+    % Fullscreen on proper screenid:
+    winRect = [];
 
-    % Try to find the output with the HMD:
+    % Find proper screenid with matching resolution of our HMD panel:
+    for screenids = Screen('Screens')
+      [w, h] = Screen('WindowSize', screenids);
+      if (w == myhmd.panelWidth) && (h == myhmd.panelHeight)
+        screenid = screenids;
+        break;
+      end
+    end
+  else
+    % Linux/X11: Try to find the output with the HMD:
+    scanout = [];
     for i=0:Screen('ConfigureDisplay', 'NumberOutputs', screenid)-1
       scanout = Screen('ConfigureDisplay', 'Scanout', screenid, i);
-      if myhmd.driver('IsHMDOutput', myhmd, scanout)
-        % This output i has proper resolution to be the HMD panel.
-        % Position our onscreen window accordingly:
-        winRect = OffsetRect([0, 0, scanout.width, scanout.height], scanout.xStart, scanout.yStart);
-        fprintf('PsychOpenHMDVR-Info: Positioning onscreen window at rect [%i, %i, %i, %i] to align with HMD output %i.\n', ...
-                winRect(1), winRect(2), winRect(3), winRect(4), i);
+      if ~myhmd.driver('IsHMDOutput', myhmd, scanout)
+        % This output is not it:
+        scanout = [];
       end
+    end
+
+    if isempty(scanout)
+      sca;
+      error('PsychOpenHMDVR-ERROR: Could not find X-Screen output with HMD on target X-Screen %i!', screenid);
+    end
+
+    % Yes. Trying to display on a screen with more than one video output?
+    if isempty(winRect) && (Screen('ConfigureDisplay', 'NumberOutputs', screenid) > 1)
+      % Yes. Not good, as this will impair graphics performance and timing a lot.
+      % Warn about this, then try to at least position the onscreen window on the
+      % right output.
+      fprintf('PsychOpenHMDVR-WARNING: You are requesting display to a VR HMD on a screen with multiple active video outputs.\n');
+      fprintf('PsychOpenHMDVR-WARNING: This will impair visual stimulation timing and cause decreased VR performance!\n');
+      fprintf('PsychOpenHMDVR-WARNING: I strongly recommend only activating one output on the HMD screen - the HMD output on the screen.\n');
+      fprintf('PsychOpenHMDVR-WARNING: On Linux with X11 X-Server, you should create a separate X-Screen for the HMD.\n');
+
+      % Position our onscreen window accordingly:
+      winRect = OffsetRect([0, 0, scanout.width, scanout.height], scanout.xStart, scanout.yStart);
+      fprintf('PsychOpenHMDVR-Info: Positioning onscreen window at rect [%i, %i, %i, %i] to align with HMD output %i [%s] of screen %i.\n', ...
+              winRect(1), winRect(2), winRect(3), winRect(4), i, scanout.name, screenid);
     end
   end
 
@@ -1373,6 +1746,29 @@ if strcmpi(cmd, 'OpenWindowSetup')
     panelRect = Screen('Rect', screenid);
   else
     panelRect = winRect;
+  end
+
+  % Turn target video output off, then on again, to get some VR HMD's like the
+  % Oculus Rift CV1 unstuck. This is needed because display DPMS seems to get
+  % into an undefined or wrong state after the HMD is powered down to standby,
+  % and therefore the video output hot-unplugged, then powered up in a new session,
+  % and therefore the video output hot-plugged again. Also set the output to be a
+  % regular "desktop" output, otherwise X can not OpenGL display on it.
+  %
+  % A DPMS forced standby -> on cycle would also work, but is more intrusive/
+  % flickery, as it globally powers down and up all connected monitors, not just
+  % the HMD, so lets do a output off->on cycle instead to only affect the actual
+  % output which needs a DPMS off -> on, which happens as side-effect of the off
+  % on cycle:
+  if IsLinux && ~isempty(strfind(myhmd.modelName, 'Rift'))
+      cmd = sprintf('xrandr --screen %i --output %s --off', screenid, scanout.name);
+      % Works also, but more intrusive on multi-display setups: cmd = sprintf('xset dpms force standby');
+      system(cmd);
+      WaitSecs(2);
+      cmd = sprintf('xrandr --screen %i --output %s --set ''non-desktop'' 0 --mode %ix%i', screenid, scanout.name, hmd{myhmd.handle}.panelWidth, hmd{myhmd.handle}.panelHeight);
+      % Works also, but more intrusive on multi-display setups: cmd = sprintf('xset dpms force on');
+      system(cmd);
+      WaitSecs(1);
   end
 
   % How is the panel mounted in the HMD, portrait or landscape?
@@ -1402,9 +1798,14 @@ if strcmpi(cmd, 'OpenWindowSetup')
   fprintf('PsychOpenHMDVR-Info: Overriding onscreen window framebuffer size to %i x %i pixels for use with VR-HMD direct output mode.\n', ...
           clientRes(1), clientRes(2));
 
+  % Make sure the window is not transparent:
+  Screen('Preference', 'WindowShieldinglevel', 2000);
+
   varargout{1} = winRect;
   varargout{2} = ovrfbOverrideRect;
   varargout{3} = ovrSpecialFlags;
+  varargout{4} = ovrMultiSample;
+  varargout{5} = screenid;
 
   return;
 end
@@ -1477,16 +1878,6 @@ if strcmpi(cmd, 'PerformPostWindowOpenSetup')
   % Only have horizontal width per eye:
   viewport_scale(1) = viewport_scale(1) / 2;
 
-  % Convert head to eye shift vectors into 4x4 matrices, as we'll need
-  % them frequently:
-  EyeT = diag([1 1 1 1]);
-  EyeT(1:3, 4) = hmd{handle}.HmdToEyeViewOffsetLeft';
-  hmd{handle}.eyeShiftMatrix{1} = EyeT;
-
-  EyeT = diag([1 1 1 1]);
-  EyeT(1:3, 4) = hmd{handle}.HmdToEyeViewOffsetRight';
-  hmd{handle}.eyeShiftMatrix{2} = EyeT;
-
   % Retrieve texture handles for the finalizedFBOs, which contain our per-eye input data for VR compositing:
   [hmd{handle}.inTex(1), hmd{handle}.inTex(2), glTextureTarget, format, multiSample, width, height] = Screen('HookFunction', win, 'GetDisplayBufferTextures');
 
@@ -1496,54 +1887,95 @@ if strcmpi(cmd, 'PerformPostWindowOpenSetup')
     hmd{handle}.inTex(2) = hmd{handle}.inTex(1);
   end
 
-  % Get GLSL shader source code for the distortion shaders:
-  [vertexShaderSrc, fragmentShaderSrc] = PsychOpenHMDVRCore('GetCorrectionShaders', handle);
+  if strcmp(hmd{handle}.modelName, 'HTC Vive')
+    % HTC Vive (Pro) specific correction shader:
+    grow_for_undistort = 0.6000000238418579; % In ohmd and JSON, vs. 0.5 for vive/survive. In JSON: grow_for_undistort
+    aspect_x_over_y = 0.8999999761581421; % Monado all drivers and JSON. In JSON: physical_aspect_x_over_y
+    coeffs = zeros(3,3,2);
 
-  left_lens_center(2) = hmd{handle}.HmdToEyeViewOffsetLeft(2);
-  right_lens_center(2) = hmd{handle}.HmdToEyeViewOffsetRight(2);
-  left_lens_center(1) = viewport_scale(1) + hmd{handle}.HmdToEyeViewOffsetLeft(1);
-  right_lens_center(1) = hmd{handle}.HmdToEyeViewOffsetRight(1);
+    % Left eye:
+    coeffs(:, 1, 1) = [-0.16640834766821358   ; -0.20331470531297763  ; -0.25831734144170526]; % Coefficient 0 rgb
+    coeffs(:, 2, 1) = [-0.08398524684858014   ; -0.027578563152494302 ;  0.06924808042080391]; % Coefficient 1 rgb
+    coeffs(:, 3, 1) = [-0.0037370006049573983 ; -0.03378921675897428  ; -0.0911560015027105]; % Coefficient 2 rgb
 
-  if left_lens_center(1) > right_lens_center(1)
-    warp_scale = left_lens_center(1);
+    % Right eye:
+    coeffs(:, 1, 2) = [-0.15753946841491998  ; -0.19474535844822508  ; -0.24972289009157236]; % Coefficient 0 rgb
+    coeffs(:, 2, 2) = [-0.09719549197929116  ; -0.03913691895553098  ;  0.056551348616293635]; % Coefficient 1 rgb
+    coeffs(:, 3, 2) = [ 0.004565599952242557 ; -0.026737368587367503 ; -0.08277243093472844]; % Coefficient 2 rgb
+
+    left_lens_center(1) = 0.08822191906110802;
+    left_lens_center(2) = 0.002215858404763872;
+
+    right_lens_center(1) = -0.08930821920625079;
+    right_lens_center(2) = 0.0025618317453592;
+
+    for i = 1:2
+      glsl(i) = LoadGLSLProgramFromFiles([fileparts(mfilename('fullpath')) filesep 'HTCViveCorrectionShader'], 1);
+      glUseProgram(glsl(i));
+
+      glUniform1i(glGetUniformLocation(glsl(i), 'warpTexture'), 0);
+      glUniform1f(glGetUniformLocation(glsl(i), 'grow_for_undistort'), grow_for_undistort);
+      glUniform1f(glGetUniformLocation(glsl(i), 'aspect_x_over_y'), aspect_x_over_y);
+      glUniform3fv(glGetUniformLocation(glsl(i), 'coeffs'), 3, coeffs(:,:,i));
+
+      if i == 1
+        glUniform2fv(glGetUniformLocation(glsl(i), 'LensCenter'), 1, left_lens_center);
+      else
+        glUniform2fv(glGetUniformLocation(glsl(i), 'LensCenter'), 1, right_lens_center);
+      end
+
+      glUseProgram(0);
+    end
   else
-    warp_scale = right_lens_center(1);
-  end
+    % Get GLSL shader source code for the distortion shaders:
+    [vertexShaderSrc, fragmentShaderSrc] = PsychOpenHMDVRCore('GetCorrectionShaders', handle);
 
-  % Setup shaders:
-  for i = 1:2
-    vertexShader = glCreateShader(GL.VERTEX_SHADER);
-    fragmentShader = glCreateShader(GL.FRAGMENT_SHADER);
-    glsl(i) = glCreateProgram();
+    left_lens_center(2) = hmd{handle}.HmdToEyeViewOffsetLeft(2);
+    right_lens_center(2) = hmd{handle}.HmdToEyeViewOffsetRight(2);
+    left_lens_center(1) = viewport_scale(1) + hmd{handle}.HmdToEyeViewOffsetLeft(1);
+    right_lens_center(1) = hmd{handle}.HmdToEyeViewOffsetRight(1);
 
-    glAttachShader(glsl(i), vertexShader);
-    glAttachShader(glsl(i), fragmentShader);
-
-    glShaderSource(vertexShader, vertexShaderSrc);
-    glCompileShader(vertexShader);
-
-    glShaderSource(fragmentShader, fragmentShaderSrc);
-    glCompileShader(fragmentShader);
-
-    glDeleteShader(vertexShader);
-    glDeleteShader(fragmentShader);
-
-    glLinkProgram(glsl(i));
-
-    glUseProgram(glsl(i));
-    glUniform1i(glGetUniformLocation(glsl(i), 'warpTexture'), 0);
-    glUniform2fv(glGetUniformLocation(glsl(i), 'ViewportScale'), 1, viewport_scale);
-    glUniform3fv(glGetUniformLocation(glsl(i), 'aberr'), 1, abberationk);
-    glUniform1f(glGetUniformLocation(glsl(i), 'WarpScale'), warp_scale);
-    glUniform4fv(glGetUniformLocation(glsl(i), 'HmdWarpParam'), 1, distortionk);
-
-    if i == 1
-      glUniform2fv(glGetUniformLocation(glsl(i), 'LensCenter'), 1, left_lens_center);
+    if left_lens_center(1) > right_lens_center(1)
+      warp_scale = left_lens_center(1);
     else
-      glUniform2fv(glGetUniformLocation(glsl(i), 'LensCenter'), 1, right_lens_center);
+      warp_scale = right_lens_center(1);
     end
 
-    glUseProgram(0);
+    % Setup shaders:
+    for i = 1:2
+      vertexShader = glCreateShader(GL.VERTEX_SHADER);
+      fragmentShader = glCreateShader(GL.FRAGMENT_SHADER);
+      glsl(i) = glCreateProgram();
+
+      glAttachShader(glsl(i), vertexShader);
+      glAttachShader(glsl(i), fragmentShader);
+
+      glShaderSource(vertexShader, vertexShaderSrc);
+      glCompileShader(vertexShader);
+
+      glShaderSource(fragmentShader, fragmentShaderSrc);
+      glCompileShader(fragmentShader);
+
+      glDeleteShader(vertexShader);
+      glDeleteShader(fragmentShader);
+
+      glLinkProgram(glsl(i));
+
+      glUseProgram(glsl(i));
+      glUniform1i(glGetUniformLocation(glsl(i), 'warpTexture'), 0);
+      glUniform2fv(glGetUniformLocation(glsl(i), 'ViewportScale'), 1, viewport_scale);
+      glUniform3fv(glGetUniformLocation(glsl(i), 'aberr'), 1, abberationk);
+      glUniform1f(glGetUniformLocation(glsl(i), 'WarpScale'), warp_scale);
+      glUniform4fv(glGetUniformLocation(glsl(i), 'HmdWarpParam'), 1, distortionk);
+
+      if i == 1
+        glUniform2fv(glGetUniformLocation(glsl(i), 'LensCenter'), 1, left_lens_center);
+      else
+        glUniform2fv(glGetUniformLocation(glsl(i), 'LensCenter'), 1, right_lens_center);
+      end
+
+      glUseProgram(0);
+    end
   end
 
   % Assign the two shaders:
@@ -1575,14 +2007,21 @@ if strcmpi(cmd, 'PerformPostWindowOpenSetup')
     Screen('HookFunction', win, 'Enable', 'CloseOnscreenWindowPostGLShutdown');
   end
 
-  if ~isempty(strfind(hmd{handle}.modelName, 'Rift (CV'))
-    % Attach override projection matrices at least for the Rift CV1:
-    [~, ~, ipd] = PsychOpenHMDVRCore('GetStaticRenderParameters', handle);
-    hmd{handle}.ipd = ipd / 16 / viewport_scale(1);
-  else
-    % No ipd correction for other HMDs:
-    hmd{handle}.ipd = 0;
-  end
+  % Compute head to eyeshift vectors as simple horizontal translation based on ipd,
+  % the interpupillar distance:
+  [~, ~, ipd] = PsychOpenHMDVRCore('GetStaticRenderParameters', handle);
+  hmd{handle}.ipd = ipd;
+  hmd{handle}.HmdToEyeViewOffsetLeft  = [-ipd / 2, 0, 0];
+  hmd{handle}.HmdToEyeViewOffsetRight = [+ipd / 2, 0, 0];
+
+  % Convert head to eye shift vectors into 4x4 matrices, as we'll need them frequently:
+  EyeT = diag([1 1 1 1]);
+  EyeT(1:3, 4) = hmd{handle}.HmdToEyeViewOffsetLeft';
+  hmd{handle}.eyeShiftMatrix{1} = EyeT;
+
+  EyeT = diag([1 1 1 1]);
+  EyeT(1:3, 4) = hmd{handle}.HmdToEyeViewOffsetRight';
+  hmd{handle}.eyeShiftMatrix{2} = EyeT;
 
   % Need HSW display?
   if (hmd{handle}.hswdismiss >= 0) && isempty(getenv('PSYCH_OpenHMD_HSWSKIP'))
@@ -1625,7 +2064,7 @@ if strcmpi(cmd, 'PerformPostWindowOpenSetup')
       end
 
       if bitand(hmd{myhmd.handle}.hswdismiss, 4)
-        hswtext = [hswtext 'Slightly tap the headset'];
+        hswtext = [hswtext 'Click any controller button'];
       end
 
       Screen('Flip', win);
@@ -1656,6 +2095,14 @@ if strcmpi(cmd, 'PerformPostWindowOpenSetup')
             end
           end
         end
+
+        % Allow dismiss via controller button?
+        if bitand(hmd{myhmd.handle}.hswdismiss, 4)
+          istate = PsychOpenHMDVRCore('GetInputState', myhmd.handle, hex2dec('ffffffff'));
+          if any(istate.Buttons)
+            dismiss = 1;
+          end
+        end
       end
 
       if bitand(hmd{myhmd.handle}.hswdismiss, 1)
@@ -1674,9 +2121,7 @@ if strcmpi(cmd, 'PerformPostWindowOpenSetup')
 
   % 3D rendering requested, instead of pure 2D rendering?
   if ~isempty(strfind(hmd{myhmd.handle}.basicTask, '3D'))
-    % Yes. Disable ipd correction as it seems to do more harm than good
-    % on the only HMD on which it would be used - the Rift CV:
-    hmd{handle}.ipd = 0;
+    % Nothing to do yet.
   end
 
   % Is this a Rift DK2 in special 1080x948 @ 120Hz video mode? And no Monoscopic mode selected?
@@ -1689,8 +2134,47 @@ if strcmpi(cmd, 'PerformPostWindowOpenSetup')
      fprintf('PsychOpenHMDVR: WARNING: left eye view displayed to both eyes, while still wasting resources on stereo rendering.\n');
   end
 
+  % Eye tracking wanted in this session and supported by system?
+  if hmd{handle}.needEyeTracking && hmd{handle}.eyeTrackingSupported
+    % Tracking api specific setup:
+
+    % SRAnipalMex available for HTC Vive SRAnipal eye tracking?
+    if IsWin && exist('SRAnipalMex', 'file') && ~isempty(strfind(hmd{handle}.modelName, 'Vive'))
+      % Yes. Use it:
+      fprintf('PsychOpenHMDVR-INFO: Trying to enable HTC SRAnipal eye tracking for this session.\n');
+
+      % Initialize eyetracker connection:
+      try
+        if SRAnipalMex(0)
+          % Start data acquisition:
+          SRAnipalMex(2);
+
+          % Upgrade eyeTrackingSupported:
+          % +1 "Basic" monocular/single gazevector
+          % +2 Binocular/separate left/right eye gaze
+          % +1024 HTC SRAnipal eye tracking in use
+          hmd{handle}.eyeTrackingSupported = 1 + 2 + 1024;
+        else
+          warning('HTC SRAnipal eye tracker startup failed! Eye tracking disabled!');
+          hmd{handle}.eyeTrackingSupported = 0;
+        end
+      catch
+        warning('HTC SRAnipal eye tracker runtime interface DLL unavailable! Eye tracking disabled!');
+        hmd{handle}.eyeTrackingSupported = 0;
+      end
+    end
+  end
+
   % Return success result code 1:
   varargout{1} = 1;
+  return;
+end
+
+% Dummy implementation for compatibility with other drivers:
+if strcmpi(cmd, 'View2DParameters')
+  varargout{1} = [NaN, NaN, NaN];
+  varargout{2} = [NaN, NaN];
+  varargout{3} = [NaN, NaN, NaN, NaN];
   return;
 end
 

@@ -50,7 +50,14 @@
  *        of the DirectX/Direct3D driver settings may also affect OpenGL rendering and stimulus presentation.
  */
 
+// Must include initguid.h before Screen.h, and therefore before any windows includes, or
+// use of any GUID as part of power management setup won't work (build time link failure):
+#include <initguid.h>
+
 #include "Screen.h"
+
+// For power management control:
+#include <PowrProf.h>
 
 #ifndef WS_EX_LAYERED
 /* Define prototype for this function: */
@@ -357,6 +364,41 @@ BOOL CALLBACK PsychHostWindowEnumFunc(HWND hwnd, LPARAM passId)
     return(TRUE);
 }
 
+/* Disable (dontIdle = TRUE), or enable use of processor core idling by OS processor power management,
+ * return if mode switch worked (TRUE) or failed (FALSE). Disabling idling should, e.g., prevent the
+ * cpus from entering sleep states, ie. ACPI C states greater than C0. As C state transitions, especially
+ * from deeper C states, can be time consuming, they can cause significant execution timing jitter in the
+ * above 200 microseconds range, and thereby impair timing correctness tests, timing calibrations etc.
+ *
+ * Note that this will increase cpu utilization to permanent 100% on all cores and may cause drastic
+ * increase in power consumption and heat production! It should therefore generally not be used all
+ * the time, but only for short time intervals, e.g., during startup tests and calibrations.
+ *
+ * This functionality requires Windows Vista and later, or build time failure will happen.
+ */
+psych_bool PsychOSDisableProcessorIdling(psych_bool dontIdle)
+{
+    GUID* activeScheme;
+
+    // No-Op with success return if env variable PSYCH_DONT_DISABLE_CPU_IDLING is defined,
+    // for testing or for interop with cpu tweaking tools - settable via PsychTweak():
+    if (getenv("PSYCH_DONT_DISABLE_CPU_IDLING"))
+        return(TRUE);
+
+    if (PowerGetActiveScheme(NULL, &activeScheme) ||
+        PowerWriteACValueIndex(NULL, activeScheme, &GUID_PROCESSOR_SETTINGS_SUBGROUP, &GUID_PROCESSOR_IDLE_DISABLE, dontIdle ? 1 : 0) ||
+        PowerWriteDCValueIndex(NULL, activeScheme, &GUID_PROCESSOR_SETTINGS_SUBGROUP, &GUID_PROCESSOR_IDLE_DISABLE, dontIdle ? 1 : 0) ||
+        PowerSetActiveScheme(NULL, activeScheme)) {
+        // Failed to switch processor idle mode!
+        return(FALSE);
+    }
+
+    // Give processor power management a bit of time to latch into the new state:
+    PsychYieldIntervalSeconds(0.010);
+
+    // Success:
+    return(TRUE);
+}
 
 /** PsychRealtimePriority: Temporarily boost priority to highest available priority in M$-Windows.
  *    PsychRealtimePriority(true) enables realtime-scheduling (like Priority(2) would do in Matlab).
@@ -377,6 +419,11 @@ psych_bool PsychRealtimePriority(psych_bool enable_realtime)
         // No transition with respect to previous state -> Nothing to do.
         return(true);
     }
+
+    // Try to disable cpu idling, e.g., C-State transitions, in realtime mode, to reduce timing noise
+    // caused by processor (package) power state transitions:
+    if (!PsychOSDisableProcessorIdling(enable_realtime) && (PsychPrefStateGet_Verbosity() > 3))
+        printf("PTB-DEBUG: %s processor idling (e.g., ACPI C-State transitions) failed!\n", enable_realtime ? "Disabling" : "Enabling");
 
     // Transition requested:
     old_enable_realtime = enable_realtime;
@@ -1096,7 +1143,16 @@ dwmdontcare:
 
     if (fullscreen) {
         windowStyle |= WS_POPUP;                    // Set The WindowStyle To WS_POPUP (Popup Window without borders)
-        windowExtendedStyle |= WS_EX_TOPMOST;        // Set The Extended Window Style To WS_EX_TOPMOST
+        windowExtendedStyle |= WS_EX_TOPMOST;       // Set The Extended Window Style To WS_EX_TOPMOST
+
+        // At visual debug level of 6 or higher, on Windows-8 or later, disable the
+        // DWM redirection surface for fullscreen windows. This means that if the
+        // fullscreen window goes through the compositor, iow. timing will be broken,
+        // then lacking such a virtual frontbuffer surface the window will display invisible.
+        // This means if the compositor kicks in when it should not, our window will not
+        // display - a clear visual indication that timing is broken due to DWM interference.
+        if (PsychOSIsMSWin8() && (PsychPrefStateGet_VisualDebugLevel() > 5))
+            windowExtendedStyle |= WS_EX_NOREDIRECTIONBITMAP;
 
         // Copy absolute screen location and area of window to 'globalrect',
         // so functions like Screen('GlobalRect') can still query the real
@@ -1529,6 +1585,14 @@ dwmdontcare:
         nNumFormats=0;
         wglChoosePixelFormatARB(hDC, &attribs[0], NULL, 1, &pf, &nNumFormats);
 
+        if (nNumFormats == 0 && numBuffers >= 2) {
+            // We still don't have a valid pixelformat, but double-buffering is enabled.
+            // Let's try if we get one if we do not request any AUX-Buffers:
+            for (i=0; i<attribcount && attribs[i]!=0x2024; i++);
+            attribs[i+1] = 0; // Zero AUX-Buffers requested.
+            wglChoosePixelFormatARB(hDC, &attribs[0], NULL, 1, &pf, &nNumFormats);
+        }
+
         if (nNumFormats == 0 && bpc > 8) {
             // Failed. Probably due to unsupported color depth. Let's fall back to standard 8 bpc:
             for (i = 0; i < attribcount && attribs[i] != WGL_RED_BITS_ARB; i++);
@@ -1563,14 +1627,6 @@ dwmdontcare:
                 attribs[i+1]=0;
                 wglChoosePixelFormatARB(hDC, &attribs[0], NULL, 1, &pf, &nNumFormats);
             }
-        }
-
-        if (nNumFormats==0 && numBuffers>=2) {
-            // We still don't have a valid pixelformat, but double-buffering is enabled.
-            // Let's try if we get one if we do not request any AUX-Buffers:
-            for (i=0; i<attribcount && attribs[i]!=0x2024; i++);
-            attribs[i+1] = 0; // Zero AUX-Buffers requested.
-            wglChoosePixelFormatARB(hDC, &attribs[0], NULL, 1, &pf, &nNumFormats);
         }
 
         if (nNumFormats==0 && numBuffers>=2) {
@@ -1921,10 +1977,10 @@ dwmdontcare:
 
     // Some info for the user regarding non-fullscreen windows:
     if (!fullscreen && (PsychPrefStateGet_Verbosity() > 2) && !(windowRecord->specialflags & kPsychExternalDisplayMethod)) {
-        printf("PTB-INFO: Most graphics cards will not support proper syncing to vertical retrace when\n");
-        printf("PTB-INFO: running in windowed mode (non-fullscreen). If PTB aborts with 'Synchronization failure'\n");
+        printf("PTB-INFO: Proper timing and timestamping of visual stimulus onset is not reliably supported at all\n");
+        printf("PTB-INFO: when running in windowed mode (non-fullscreen). If PTB aborts with 'Synchronization failure'\n");
         printf("PTB-INFO: you can disable the sync test via call to Screen('Preference', 'SkipSyncTests', 2); .\n");
-        printf("PTB-INFO: You won't get proper stimulus onset timestamps though, so windowed mode may be of limited use.\n");
+        printf("PTB-INFO: You won't get proper stimulus onset timestamps in any case though, so windowed mode is of limited use.\n");
     }
 
     // Check for the VSYNC extension:
@@ -2583,14 +2639,14 @@ void PsychOSSetVBLSyncLevel(PsychWindowRecordType *windowRecord, int swapInterva
     // Try to set requested swapInterval if swap-control extension is supported on
     // this windows machine. Otherwise this will be a no-op...
     if (wglSwapIntervalEXT) {
-        if(!wglSwapIntervalEXT(swapInterval)) {
+        if (!wglSwapIntervalEXT(swapInterval) && (PsychPrefStateGet_Verbosity() > 0)) {
             failcount++;
             if (failcount <= 10) printf("PTB-ERROR: Setting wglSwapInterval(%i) failed! Expect severe display timing and display tearing problems!!! See 'help SyncTrouble' for more info.\n", swapInterval);
             if (failcount == 10) printf("PTB-ERROR: This error message won't repeat on subsequent failure...\n");
         }
 
         // Double check new setting:
-        if ((NULL == wglGetSwapIntervalEXT) || (wglGetSwapIntervalEXT() != swapInterval)) {
+        if (((NULL == wglGetSwapIntervalEXT) || (wglGetSwapIntervalEXT() != swapInterval)) && (PsychPrefStateGet_Verbosity() > 0)) {
             failcount++;
             if (failcount <= 10) {
                 if (NULL == wglGetSwapIntervalEXT) {

@@ -9,24 +9,23 @@ function BatchAnalyzeTiming(sdir)
         sdir = pwd;
     end
     
-    % Recursively get filenames of all result files in 'sdir' directory tree:
-    [fdir, fnames] = subdir(sdir);
+    % Get filenames of all result files in 'sdir' directory tree:
+    fnames = FileFromFolder(sdir);
 
-    [gnrTotal, gnrSkipped, gnrCorrupt, gnrDisagree, gnrDelayed, meanDiff, stdDiff, rawmeanDiff, rawstdDiff, rawrangeDiff] = deal(0);
+    [gnrTotal, gnrSkipped, gnrCorrupt, gnrDisagree, gnrDelayed, meanDiff, stdDiff, rawmeanDiff, rawstdDiff] = deal(0);
     sc = 0;
     rangeDiff = zeros(3,0);
     rawrangeDiff = zeros(3,0);
     
     % Check each for valid and matching datafile:
     for fi = 1:length(fnames)
-        fname = char(fnames{fi});
+        fname = char(fnames(fi).fname);
 
         % Only interested in Priority 1 runs with sync-flip and medium load:
-%        if ~isempty(strfind(fname, 'Res_flipconfig_prio1_syncflip')) && ~isempty(strfind(fname,'_medium_')) %&& ~isempty(strfind(fname,'noload'))
-        if ~isempty(strfind(fname, 'Res_flipconfig_'))
+        if ~isempty(strfind(fname, 'Res_flip')) %#ok<STREMP>
 
             % Load result file: Will create struct 'res' with data:
-            load(fname);
+            load(fname); %#ok<LOAD>
             
             if (res.measurementType == 'p') && res.VBLTimestampingMode == 1 && isfield(res, 'onsetFlipTime') && res.onsetFlipTime(end) > 0
             %if (res.measurementType == 'd') && res.VBLTimestampingMode == 1 && isfield(res, 'onsetFlipTime') && res.onsetFlipTime(end) > 0
@@ -111,14 +110,14 @@ function [nrTotal, nrSkipped, nrCorrupt, nrDisagree, nrDelayed, meanDiff, stdDif
     vdeltas = 1000 * deltas(agreevalids); %#ok<FNDSB>
     meanDiff  = mean(vdeltas);
     stdDiff   = std(vdeltas);
-    rangeDiff(1) = range(vdeltas);
+    rangeDiff(1) = psychrange(vdeltas);
     rangeDiff(2) = min(vdeltas);
     rangeDiff(3) = max(vdeltas);
 
     vrawdeltas = 1000 * (res.measuredTime(agreevalids) - res.rawFlipTime(agreevalids));
     rawmeanDiff  = mean(vrawdeltas);
     rawstdDiff   = std(vrawdeltas);
-    rawrangeDiff(1) = range(vrawdeltas);
+    rawrangeDiff(1) = psychrange(vrawdeltas);
     rawrangeDiff(2) = min(vrawdeltas);
     rawrangeDiff(3) = max(vrawdeltas);
     

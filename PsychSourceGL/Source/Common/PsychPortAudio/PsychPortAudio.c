@@ -19,17 +19,11 @@
  *        feedback with well controlled timing and low latency. Uses the free software
  *        PortAudio library, API Version 19 (http://www.portaudio.com), which has a MIT style license.
  *
- *        This seems to link statically against libportaudio.a on OS/X. However, it doesn't!
- *        Due to some restrictions of the OS/X linker we can't link statically against portaudio,
- *        so we have to have a .dylib version of the library installed in a system library
- *        search path, both for compiling and using PsychPortAudio. The current universal
- *        binary version of libportaudio.a for OS/X can be found in the...
- *        PsychSourceGL/Cohorts/PortAudio/ subfolder, which also contains versions for
- *        Linux and Windows.
- *
  */
 
 #include "PsychPortAudio.h"
+
+unsigned int verbosity = 4;
 
 #if PSYCH_SYSTEM == PSYCH_OSX
 #include "pa_mac_core.h"
@@ -41,6 +35,11 @@
 
 #if PSYCH_SYSTEM == PSYCH_WINDOWS
 #include "pa_win_wasapi.h"
+#if defined(__LP64__) || defined(_WIN64)
+#define PORTAUDIO_DLLNAME "portaudio_x64.dll"
+#else
+#define PORTAUDIO_DLLNAME "portaudio_x86.dll"
+#endif
 #endif
 
 #if PSYCH_SYSTEM == PSYCH_LINUX
@@ -55,88 +54,6 @@ static void ALSAErrorHandler(const char *file, int line, const char *function, i
 {
 }
 
-// Pseudo-Defines of Portaudio internal structs, mimicking the memory layout
-// of the true Portaudio internal structs just enough so that we can cast a PaStream*
-// into a PaAlsaStream*, then access a stream-internal variable of the buffer-processor
-// and fudge with it in the most hackish and puke inducing way to work around a bug
-// present in the audio-capture only mode setup code (ie. no playback) inside the ALSA
-// backend since 24th May 2009! This over 9 years old bug causes massive distortion if
-// one only uses audio-capture, but no playback or full-duplex mode.
-//
-// A clean way of fixing this will be to get a fix into upstream, but we need to support
-// all the existing libportaudio implementations in all Linux distributions from 2009 to
-// 2019. The only option for shipping distros therefore would be to go back to static
-// linking against our own bug-fixed variant of libportaudio, but i haven't spent the
-// better part of a week to get us to finally be able to drop our own private libportaudio
-// builds, just to reintroduce them now! Therefore ugly hack it is...
-
-typedef enum {
-    paUtilFixedHostBufferSize,
-    paUtilBoundedHostBufferSize,
-    paUtilUnknownHostBufferSize,
-    paUtilVariableHostBufferSizePartialUsageAllowed
-} PaUtilHostBufferSizeMode;
-
-typedef struct {
-    unsigned long framesPerUserBuffer;
-    unsigned long framesPerHostBuffer;
-
-    PaUtilHostBufferSizeMode hostBufferSizeMode;
-    int useNonAdaptingProcess;
-    int userOutputSampleFormatIsEqualToHost;
-    int userInputSampleFormatIsEqualToHost;
-    unsigned long framesPerTempBuffer;
-
-    unsigned int inputChannelCount;
-    unsigned int bytesPerHostInputSample;
-    unsigned int bytesPerUserInputSample;
-    int userInputIsInterleaved;
-    // More stuff follows in real data struct...
-} PseudoBufferProcessor;
-
-typedef struct {
-    double samplingPeriod;
-    double measurementStartTime;
-    double averageLoad;
-} PseudoCpuLoadMeasurer;
-
-#define PA_STREAM_MAGIC (0x18273645)
-
-typedef struct PseudoStreamRepresentation {
-    unsigned long magic;    /**< set to PA_STREAM_MAGIC */
-    struct PseudoStreamRepresentation *nextOpenStream; /**< field used by multi-api code */
-    void *streamInterface;
-    void *streamCallback;
-    void *streamFinishedCallback;
-    void *userData;
-    PaStreamInfo streamInfo;
-} PseudoStreamRepresentation;
-
-typedef struct PseudoStreamRepresentationExt {
-    unsigned long magic;    /**< set to PA_STREAM_MAGIC */
-    struct PseudoStreamRepresentationExt *nextOpenStream; /**< field used by multi-api code */
-    void *streamInterface;
-    void *streamCallback;
-    void *streamFinishedCallback;
-    void *userData;
-    PaStreamInfo streamInfo;
-    PaHostApiTypeId hostApiType;
-} PseudoStreamRepresentationExt;
-
-typedef struct PseudoAlsaStream {
-    PseudoStreamRepresentation streamRepresentation;
-    PseudoCpuLoadMeasurer cpuLoadMeasurer;
-    PseudoBufferProcessor bufferProcessor;
-    // More stuff follows in real data struct...
-} PseudoAlsaStream;
-
-typedef struct PseudoAlsaStreamExt {
-    PseudoStreamRepresentationExt streamRepresentation;
-    PseudoCpuLoadMeasurer cpuLoadMeasurer;
-    PseudoBufferProcessor bufferProcessor;
-    // More stuff follows in real data struct...
-} PseudoAlsaStreamExt;
-
 #endif
 
 // Need to define these as they aren't defined in portaudio.h
@@ -144,20 +61,34 @@ typedef struct PseudoAlsaStreamExt {
 typedef void (*PaUtilLogCallback ) (const char *log);
 void PaUtil_SetDebugPrintFunction(PaUtilLogCallback  cb);
 
-#if PSYCH_SYSTEM == PSYCH_LINUX
+// Only dynamically bind PaUtil_SetDebugPrintFunction on non-macOS, as on
+// macOS we link portaudio statically so this would not work:
+#if PSYCH_SYSTEM != PSYCH_OSX
 void (*myPaUtil_SetDebugPrintFunction)(PaUtilLogCallback  cb) = NULL;
 
-// Wrapper implementation, as many libportaudio.so implementations seem to lack this function :(:
-void PaUtil_SetDebugPrintFunction(PaUtilLogCallback  cb)
+// Wrapper implementation, as many libportaudio library implementations seem to lack this function,
+// causing linker / mex load time failure if we'd depend on it:(:
+void PsychPAPaUtil_SetDebugPrintFunction(PaUtilLogCallback  cb)
 {
-    // Try to get function dynamically:
-    myPaUtil_SetDebugPrintFunction = dlsym(RTLD_NEXT, "PaUtil_SetDebugPrintFunction");
+    // Try to get/link function dynamically:
+    #if PSYCH_SYSTEM == PSYCH_WINDOWS
+        // Windows:
+        myPaUtil_SetDebugPrintFunction = (void*) GetProcAddress(GetModuleHandle(PORTAUDIO_DLLNAME), "PaUtil_SetDebugPrintFunction");
+    #else
+        // Linux and macOS:
+        myPaUtil_SetDebugPrintFunction = dlsym(RTLD_NEXT, "PaUtil_SetDebugPrintFunction");
+    #endif
 
+    // Call if function is supported, otherwise we no-op:
     if (myPaUtil_SetDebugPrintFunction)
         myPaUtil_SetDebugPrintFunction(cb);
+    else if ((verbosity > 5) && (cb != NULL))
+        printf("PTB-DEBUG: PortAudio library lacks PaUtil_SetDebugPrintFunction(). Low-Level PortAudio debugging output unavailable.\n");
 
     return;
 }
+#else
+#define PsychPAPaUtil_SetDebugPrintFunction PaUtil_SetDebugPrintFunction
 #endif
 
 // Forward define of prototype of our own custom new PortAudio extension function for Zero latency direct input monitoring:
@@ -175,6 +106,7 @@ static const char *synopsisSYNOPSIS[MAX_SYNOPSIS_STRINGS];
 #define kPortAudioIsAMModulator         32
 #define kPortAudioIsOutputCapture       64
 #define kPortAudioIsAMModulatorForSlave 128
+#define kPortAudioAMModulatorNeutralIsZero 256
 
 // Maximum number of audio devices we handle:
 // This consumes around 200 Bytes static memory per potential device, so
@@ -234,6 +166,7 @@ typedef struct PsychPADevice {
     psych_condition         changeSignal;   // Condition variable or event object for change signalling (see above).
     int                     opmode;         // Mode of operation: Playback, capture or full duplex? Master, Slave or standalone?
     int                     runMode;        // Runmode: 0 = Stop engine at end of playback, 1 = Keep engine running in hot-standby, ...
+    int                     latencyclass;   // Selected latencyclass in 'Open'.
     PaStream *stream;                       // Pointer to associated portaudio stream.
     const PaStreamInfo*     streaminfo;     // Pointer to stream info structure, provided by PortAudio.
     PaHostApiTypeId         hostAPI;        // Type of host API.
@@ -267,10 +200,10 @@ typedef struct PsychPADevice {
     psych_int64 readposition;       // Last read-out sample since start of capture.
     psych_int64 outchannels;        // Number of output channels.
     psych_int64 inchannels;         // Number of input channels.
-    unsigned int xruns;             // Number of over-/underflows of input-/output channel for this stream.
-    unsigned int paCalls;           // Number of callback invocations.
-    unsigned int noTime;            // Number of timestamp malfunction - Should not happen anymore.
+    psych_uint64 paCalls;           // Number of callback invocations.
+    psych_uint64 noTime;            // Number of timestamp malfunction - Should not happen anymore.
     psych_int64 batchsize;          // Maximum number of frames requested during callback invokation: Estimate of real buffersize.
+    unsigned int xruns;             // Number of over-/underflows of input-/output channel for this stream.
     double     predictedLatency;    // Latency that PortAudio predicts for current callbackinvocation. We will compensate for that when starting audio.
     double   latencyBias;           // A bias value to add to the value that PortAudio reports for total buffer->Speaker latency.
                                     // This value defaults to zero.
@@ -303,12 +236,12 @@ typedef struct PsychPADevice {
 
 PsychPADevice audiodevices[MAX_PSYCH_AUDIO_DEVS];
 unsigned int  audiodevicecount = 0;
-unsigned int  verbosity = 4;
 double        yieldInterval = 0.001;            // How long to wait in calls to PsychYieldIntervalSeconds().
 psych_bool    uselocking = TRUE;                // Use Mutex locking and signalling code for thread synchronization?
 psych_bool    lockToCore1 = TRUE;               // NO LONGER USED: Lock all engine threads to run on cpu core 1 on Windows to work around broken TSC sync on multi-cores?
 psych_bool    pulseaudio_autosuspend = TRUE;    // Should we try to suspend the Pulseaudio sound server on Linux while we're active?
 psych_bool    pulseaudio_isSuspended = FALSE;   // Is PulseAudio suspended by us?
+unsigned int  workaroundsMask = 0;              // Bitmask of enabled workarounds.
 
 double debugdummy1, debugdummy2;
 
@@ -924,6 +857,19 @@ static int paCallback( const void *inputBuffer, void *outputBuffer,
         PsychGetAdjustedPrecisionTimerSeconds(&now);
 
         #if PSYCH_SYSTEM == PSYCH_LINUX
+        // Enable realtime scheduling for our audio processing thread on ALSA and Pulseaudio backends.
+        // Jack backend does setup by itself, OSS and ASIHPI don't matter anymore.
+        if ((dev->paCalls == 0xffffffffffffffff) && (hA == paALSA || hA == paPulseAudio)) {
+            int rc;
+
+            // Try to raise our priority: We ask to switch ourselves (NULL) to priority class 2 aka
+            // realtime scheduling, with a tweakPriority of +4, ie., raise the relative priority
+            // level by +4 wrt. to the current level:
+            if ((rc = PsychSetThreadPriority(NULL, 2, 4)) > 0) {
+                if (verbosity > 1) printf("PTB-WARNING: In PsychPortAudio:paCallback(): Failed to switch to boosted realtime priority [%s]! Audio may glitch.\n", strerror(rc));
+            }
+        }
+
         if (hA == paALSA) {
             // ALSA on Linux can return timestamps in CLOCK_MONOTONIC time
             // instead of our standard GetSecs() [gettimeofday] timesbase.
@@ -941,6 +887,14 @@ static int paCallback( const void *inputBuffer, void *outputBuffer,
 
             // Returned current time timestamp closer to tMonotonic than to GetSecs time?
             if (fabs(timeInfo->currentTime - tMonotonic) < fabs(timeInfo->currentTime - now)) {
+                // Timing information from host API broken/invalid?
+                if (timeInfo->currentTime == 0) {
+                    // Yes: Set tMonotonic to zero, so currentTime, outputBufferDacTime, inputBufferAdcTime
+                    // end up being current system time 'now'. Bad for timing, but keeps us going. Currently
+                    // as of Ubuntu 20.04-LTS, the pulseaudio ALSA plugin delivers broken timing:
+                    tMonotonic = 0;
+                }
+
                 // Timestamps are in monotonic time! Need to remap.
                 // tMonotonic shall be the offset between GetSecs and monotonic time,
                 // i.e., the offset that needs to be added to monotonic timestamps to
@@ -976,9 +930,9 @@ static int paCallback( const void *inputBuffer, void *outputBuffer,
             captureStartTime = (double) timeInfo->inputBufferAdcTime;
         }
         else {
-            // Not yet verified how these other audio APIs behave. Play safe
-            // and perform timebase remapping: This also needs our special fixed
-            // PortAudio version where currentTime actually has a value:
+            // Either known to need timestamp remapping, e.g., PulseAudio, or
+            // not yet verified how these other audio APIs behave. Play safe
+            // and perform timebase remapping:
             if (dev->opmode & kPortAudioPlayBack) {
                 // Playback enabled: Use DAC time as basis for timing:
                 // Assign predicted (remapped to our time system) audio onset time for this buffer:
@@ -1036,14 +990,33 @@ static int paCallback( const void *inputBuffer, void *outputBuffer,
     // Cache requested state:
     reqstate = dev->reqstate;
 
+    // Reset to 0 start value on first invocation, before first increment:
+    if (dev->paCalls == 0xffffffffffffffff)
+        dev->paCalls = 0;
+
     // Count total number of calls:
     dev->paCalls++;
 
-    // Call number of timestamp failures:
+    // Count number of timestamp failures:
     if (timeInfo->currentTime == 0) dev->noTime++;
 
-    // Keep track of maximum number of frames requested:
-    if (dev->batchsize < (psych_int64) framesPerBuffer) dev->batchsize = (psych_int64) framesPerBuffer;
+    // Keep track of maximum number of frames requested/provided:
+    if (dev->batchsize < (psych_int64) framesPerBuffer) {
+        dev->batchsize = (psych_int64) framesPerBuffer;
+
+        // Master - Slave processing needs internal scratch buffers of fitting size:
+        if (isMaster) {
+            // As dev->batchsize has grown, we need to reallocate slave buffers at
+            // the new bigger size, so free current ones to trigger a new malloc
+            // later on:
+            free(dev->slaveInBuffer);
+            dev->slaveInBuffer = NULL;
+            free(dev->slaveOutBuffer);
+            dev->slaveOutBuffer = NULL;
+            free(dev->slaveGainBuffer);
+            dev->slaveGainBuffer = NULL;
+        }
+    }
 
     // Keep track of buffer over-/underflows:
     if (statusFlags & (paInputOverflow | paInputUnderflow | paOutputOverflow | paOutputUnderflow)) dev->xruns++;
@@ -1082,8 +1055,9 @@ static int paCallback( const void *inputBuffer, void *outputBuffer,
 
     // Assign 1 as neutral value for AM modulator slaves, as 1 is the neutral
     // element for gain-modulation (multiplication), as opposed to zero as neutral
-    // element for mixing and for outputting "silence":
-    neutralValue = (dev->opmode & kPortAudioIsAMModulator) ? 1.0f : 0.0f;
+    // element for mixing and for outputting "silence", unless specifically an
+    // AM modulator neutral value of zero is requested:
+    neutralValue = ((dev->opmode & kPortAudioIsAMModulator) && !(dev->opmode & kPortAudioAMModulatorNeutralIsZero)) ? 1.0f : 0.0f;
 
     // Requested logical playback state is "stopped" or "aborting" ? If so, abort.
     if ((reqstate == 0) || (reqstate == 3)) {
@@ -1120,6 +1094,25 @@ static int paCallback( const void *inputBuffer, void *outputBuffer,
             // into no-ops due to the nominal idle state:
             return(paContinue);
         }
+    }
+
+    // Deal with a quirk of the initial Pulseaudio backend implementation. During engine startup, likely
+    // as part of audio buffer priming, the Pulseaudio backend delivers a stretch of invalid timestamps
+    // for the first bunch of paCallback calls. We can't schedule meaningfully during this startup, so
+    // better no-op by outputting silence until the situation rectifies after a bunch of iterations:
+    if (!isSlave && (hA == paPulseAudio) && (dev->paCalls == dev->noTime) && (timeInfo->currentTime == 0)) {
+        // Timestamps wrong/useless, so can not meaningfully proceed, as any kind of timestamp based sound
+        // onset/offset/schedule scheduling would go haywire. We try to no-op as good as possible, by
+        // outputting silence and returning control to PortAudio's thread:
+
+        // Release mutex here, as memset() only operates on "local" data:
+        PsychPAUnlockDeviceMutex(dev);
+
+        // Prime the outputbuffer with silence:
+        if (outputBuffer) memset(outputBuffer, 0, (size_t) (framesPerBuffer * outchannels * sizeof(float)));
+
+        // Done:
+        return(paContinue);
     }
 
     // Are we in a nominally "idle" / inactive state?
@@ -1281,7 +1274,7 @@ static int paCallback( const void *inputBuffer, void *outputBuffer,
 
         if (NULL != outputBuffer) {
             // Have scratch buffers ready. Clear output intermix buffer:
-            memset(outputBuffer, 0, (size_t) (dev->batchsize * outchannels * sizeof(float)));
+            memset(outputBuffer, 0, (size_t) (framesPerBuffer * outchannels * sizeof(float)));
         }
 
         // Iterate over all slave device callbacks: Or at least until all registered slaves are handled.
@@ -1314,108 +1307,129 @@ static int paCallback( const void *inputBuffer, void *outputBuffer,
                     // Yes. Execute it:
                     audiodevices[modulatorSlave].slaveDirty = 0;
 
-                // Prefill buffer with neutral 1.0:
-                tmpBuffer = dev->slaveGainBuffer;
-                for (j = 0; j < dev->batchsize * audiodevices[modulatorSlave].outchannels; j++) *(tmpBuffer++) = 1.0;
+                    // Prefill buffer with neutral 1.0:
+                    tmpBuffer = dev->slaveGainBuffer;
+                    for (j = 0; j < framesPerBuffer * audiodevices[modulatorSlave].outchannels; j++) *(tmpBuffer++) = 1.0;
 
-                // This will potentially fill the slaveGainBuffer with gain modulation values.
-                // The passed slaveInBuffer is meaningless for a modulator slave and only contains random junk...
-                paCallback( (const void*) dev->slaveInBuffer, (void*) dev->slaveGainBuffer, (unsigned long) dev->batchsize, timeInfo, statusFlags, (void*) &(audiodevices[modulatorSlave]));
-                    }
-                    else {
-                        // No. Either no modulator slave or slave not currently active. Signal this
-                        // by setting modulatorSlave to a -1 value:
-                        modulatorSlave = -1;
-                    }
+                    // This will potentially fill the slaveGainBuffer with gain modulation values.
+                    // The passed slaveInBuffer is meaningless for a modulator slave and only contains random junk...
+                    paCallback( (const void*) dev->slaveInBuffer, (void*) dev->slaveGainBuffer, (unsigned long) framesPerBuffer, timeInfo, statusFlags, (void*) &(audiodevices[modulatorSlave]));
+                }
+                else {
+                    // No. Either no modulator slave or slave not currently active. Signal this
+                    // by setting modulatorSlave to a -1 value:
+                    modulatorSlave = -1;
+                }
 
-                    // Skip actual slaves processing if its state is zero == completely inactive.
-                    if (audiodevices[slaveId].state > 0) {
-                        // Slave is active, need to process it:
+                // Skip actual slaves processing if its state is zero == completely inactive.
+                if (audiodevices[slaveId].state > 0) {
+                    // Slave is active, need to process it:
 
-                        // Reset dirty flag for this slave:
-                        audiodevices[slaveId].slaveDirty = 0;
+                    // Reset dirty flag for this slave:
+                    audiodevices[slaveId].slaveDirty = 0;
 
-                        // Is this a playback slave?
-                        if (audiodevices[slaveId].opmode & kPortAudioPlayBack) {
-                            // Prefill slaves output buffer with 1.0, a neutral gain value for playback slaves
-                            // without a AM modulator attached. The same prefill is needed with AM modulator,
-                            // this time to make the modulator itself happy:
-                            tmpBuffer = dev->slaveOutBuffer;
-                            for (j = 0; j < dev->batchsize * audiodevices[slaveId].outchannels; j++) *(tmpBuffer++) = 1.0;
+                    // Is this a playback slave?
+                    if (audiodevices[slaveId].opmode & kPortAudioPlayBack) {
+                        // Prefill slaves output buffer with 1.0, a neutral gain value for playback slaves
+                        // without a AM modulator attached. The same prefill is needed with AM modulator,
+                        // this time to make the modulator itself happy:
+                        tmpBuffer = dev->slaveOutBuffer;
+                        for (j = 0; j < framesPerBuffer * audiodevices[slaveId].outchannels; j++) *(tmpBuffer++) = 1.0;
 
-                            // Ok, the outbuffer is filled with a neutral 1.0 gain value. This will work
-                            // even if no per-slave gain modulation is provided by a modulator slave.
+                        // Ok, the outbuffer is filled with a neutral 1.0 gain value. This will work
+                        // even if no per-slave gain modulation is provided by a modulator slave.
 
-                            // Is a modulator slave active and did it write any gain AM values?
-                            if ((modulatorSlave > -1) && (audiodevices[modulatorSlave].slaveDirty)) {
-                                // Yes. Need to distribute them to proper channels in slaveOutBuffer:
-                                tmpBuffer = dev->slaveGainBuffer;
+                        // An attached but inactive AM modulator with mode kPortAudioAMModulatorNeutralIsZero for this slave needs special treatment:
+                        if (audiodevices[slaveId].modulatorSlave > -1) {
+                            int myModulator = audiodevices[slaveId].modulatorSlave;
+
+                            if ((audiodevices[myModulator].stream) && (audiodevices[myModulator].opmode & kPortAudioIsAMModulatorForSlave) &&
+                                (audiodevices[myModulator].opmode & kPortAudioAMModulatorNeutralIsZero)) {
+                                // Neutral should be zero, so zero-fill all our slaves channels to which its AM modulator is attached.
+                                // This way non-attached channels stay at a neutral gain of 1 from prefill above and are unaffected by the modulator.
+                                // Channels that are supposed to be fed by the modulator get zero-gain, so if the modulator is stopped, the effect
+                                // will be as if the modulator had written zeros to "gate/mute" the slaves channel:
                                 mixBuffer = dev->slaveOutBuffer;
-                                for (j = 0; j < dev->batchsize; j++) {
+                                for (j = 0; j < framesPerBuffer; j++) {
                                     // Iterate over all target channels in the slave device outputbuffer:
-                                    for (k = 0; k < audiodevices[modulatorSlave].outchannels; k++) {
-                                        // Modulate current sample in intermixbuffer via multiplication:
-                                        mixBuffer[(j * audiodevices[slaveId].outchannels) + audiodevices[modulatorSlave].outputmappings[k]] = *(tmpBuffer++) * audiodevices[modulatorSlave].outChannelVolumes[k];
+                                    for (k = 0; k < audiodevices[myModulator].outchannels; k++) {
+                                        // Set new init gain to zero for a target channel to which the modulator is attached:
+                                        mixBuffer[(j * audiodevices[slaveId].outchannels) + audiodevices[myModulator].outputmappings[k]] = 0.0;
                                     }
-                                }
-                            }
-                        }    // Ok, the slaveOutBuffer for this playback slave is prefilled with valid gain modulation data to apply to the actual sound output.
-
-                        // Capture enabled on slave? If so, we need to distribute our captured audio data to it:
-                        if (audiodevices[slaveId].opmode & kPortAudioCapture) {
-                            tmpBuffer = dev->slaveInBuffer;
-                            // For each sampleFrame in the input buffer:
-                            for (j = 0; j < dev->batchsize; j++) {
-                                // Iterate over all target channels in the slave devices inputbuffer:
-                                for (k = 0; k < audiodevices[slaveId].inchannels; k++) {
-                                    // And fetch from corrsponding source channel of our device:
-                                    *(tmpBuffer++) = in[(j * inchannels) + audiodevices[slaveId].inputmappings[k]];
                                 }
                             }
                         }
 
-                        // Temporary input buffer is filled for slave callback: Execute it.
-                        paCallback( (const void*) dev->slaveInBuffer, (void*) dev->slaveOutBuffer, (unsigned long) dev->batchsize, timeInfo, statusFlags, (void*) &(audiodevices[slaveId]));
-
-                        // Check if the paCallback actually filled anything into the dev->slaveOutBuffer:
-                        if ((audiodevices[slaveId].opmode & kPortAudioPlayBack) && audiodevices[slaveId].slaveDirty) {
-                            // Slave has written meaningful data to its output buffer. Merge & mix it:
-
-                            // Process from first non-silence sample slot (after silenceframes prefix) until end of buffer:
-                            tmpBuffer = &(dev->slaveOutBuffer[committedFrames * audiodevices[slaveId].outchannels]);
-                            mixBuffer = (float*) outputBuffer;
-
-                            // Special AM-Modulator slave?
-                            if (audiodevices[slaveId].opmode & kPortAudioIsAMModulator) {
-                                // Yes: This slave doesn't provide audio data for mixing, but instead
-                                // a time-series of gain modulation samples for amplitude modulation.
-                                // Multiply the master channels samples with the slaves "gain samples"
-                                // to apply AM modulation:
-                                for (j = committedFrames; j < dev->batchsize; j++) {
-                                    // Iterate over all target channels in the slave device outputbuffer:
-                                    for (k = 0; k < audiodevices[slaveId].outchannels; k++) {
-                                        // Modulate current sample in intermixbuffer via multiplication:
-                                        mixBuffer[(j * outchannels) + audiodevices[slaveId].outputmappings[k]] *= *(tmpBuffer++) * audiodevices[slaveId].outChannelVolumes[k];
-                                    }
+                        // Is a modulator slave active and did it write any gain AM values?
+                        if ((modulatorSlave > -1) && (audiodevices[modulatorSlave].slaveDirty)) {
+                            // Yes. Need to distribute them to proper channels in slaveOutBuffer:
+                            tmpBuffer = dev->slaveGainBuffer;
+                            mixBuffer = dev->slaveOutBuffer;
+                            for (j = 0; j < framesPerBuffer; j++) {
+                                // Iterate over all target channels in the slave device outputbuffer:
+                                for (k = 0; k < audiodevices[modulatorSlave].outchannels; k++) {
+                                    // Modulate current sample in intermixbuffer via multiplication:
+                                    mixBuffer[(j * audiodevices[slaveId].outchannels) + audiodevices[modulatorSlave].outputmappings[k]] = *(tmpBuffer++) * audiodevices[modulatorSlave].outChannelVolumes[k];
                                 }
                             }
-                            else {
-                                // Regular mix: Mix all output channels of the slave into the proper target channels
-                                // of the master by simple addition. Apply per-channel volume settings of the slave
-                                // during mix:
-                                for (j = committedFrames; j < dev->batchsize; j++) {
-                                    // Iterate over all target channels in the slave device outputbuffer:
-                                    for (k = 0; k < audiodevices[slaveId].outchannels; k++) {
-                                        // Mix current sample via addition:
-                                        mixBuffer[(j * outchannels) + audiodevices[slaveId].outputmappings[k]] += *(tmpBuffer++) * audiodevices[slaveId].outChannelVolumes[k];
-                                    }
-                                }
+                        }
+                    }    // Ok, the slaveOutBuffer for this playback slave is prefilled with valid gain modulation data to apply to the actual sound output.
+
+                    // Capture enabled on slave? If so, we need to distribute our captured audio data to it:
+                    if (audiodevices[slaveId].opmode & kPortAudioCapture) {
+                        tmpBuffer = dev->slaveInBuffer;
+                        // For each sampleFrame in the input buffer:
+                        for (j = 0; j < framesPerBuffer; j++) {
+                            // Iterate over all target channels in the slave devices inputbuffer:
+                            for (k = 0; k < audiodevices[slaveId].inchannels; k++) {
+                                // And fetch from corrsponding source channel of our device:
+                                *(tmpBuffer++) = in[(j * inchannels) + audiodevices[slaveId].inputmappings[k]];
                             }
                         }
                     }
 
-                    // One more slave handled:
-                    numSlavesHandled++;
+                    // Temporary input buffer is filled for slave callback: Execute it.
+                    paCallback( (const void*) dev->slaveInBuffer, (void*) dev->slaveOutBuffer, (unsigned long) framesPerBuffer, timeInfo, statusFlags, (void*) &(audiodevices[slaveId]));
+
+                    // Check if the paCallback actually filled anything into the dev->slaveOutBuffer:
+                    if ((audiodevices[slaveId].opmode & kPortAudioPlayBack) && audiodevices[slaveId].slaveDirty) {
+                        // Slave has written meaningful data to its output buffer. Merge & mix it:
+
+                        // Process from first non-silence sample slot (after silenceframes prefix) until end of buffer:
+                        tmpBuffer = &(dev->slaveOutBuffer[committedFrames * audiodevices[slaveId].outchannels]);
+                        mixBuffer = (float*) outputBuffer;
+
+                        // Special AM-Modulator slave?
+                        if (audiodevices[slaveId].opmode & kPortAudioIsAMModulator) {
+                            // Yes: This slave doesn't provide audio data for mixing, but instead
+                            // a time-series of gain modulation samples for amplitude modulation.
+                            // Multiply the master channels samples with the slaves "gain samples"
+                            // to apply AM modulation:
+                            for (j = committedFrames; j < framesPerBuffer; j++) {
+                                // Iterate over all target channels in the slave device outputbuffer:
+                                for (k = 0; k < audiodevices[slaveId].outchannels; k++) {
+                                    // Modulate current sample in intermixbuffer via multiplication:
+                                    mixBuffer[(j * outchannels) + audiodevices[slaveId].outputmappings[k]] *= *(tmpBuffer++) * audiodevices[slaveId].outChannelVolumes[k];
+                                }
+                            }
+                        }
+                        else {
+                            // Regular mix: Mix all output channels of the slave into the proper target channels
+                            // of the master by simple addition. Apply per-channel volume settings of the slave
+                            // during mix:
+                            for (j = committedFrames; j < framesPerBuffer; j++) {
+                                // Iterate over all target channels in the slave device outputbuffer:
+                                for (k = 0; k < audiodevices[slaveId].outchannels; k++) {
+                                    // Mix current sample via addition:
+                                    mixBuffer[(j * outchannels) + audiodevices[slaveId].outputmappings[k]] += *(tmpBuffer++) * audiodevices[slaveId].outChannelVolumes[k];
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // One more slave handled:
+                numSlavesHandled++;
             }
         }    // Next slave...
 
@@ -1442,7 +1456,7 @@ static int paCallback( const void *inputBuffer, void *outputBuffer,
                         mixBuffer = (float*) outputBuffer;
 
                         // For each sampleFrame in the mixBuffer:
-                        for (j = 0; j < dev->batchsize; j++) {
+                        for (j = 0; j < framesPerBuffer; j++) {
                             // Iterate over all target channels in the slave devices inputbuffer:
                             for (k = 0; k < audiodevices[slaveId].inchannels; k++) {
                                 // And fetch from corrsponding mixBuffer channel of our device, applying the same
@@ -1457,7 +1471,7 @@ static int paCallback( const void *inputBuffer, void *outputBuffer,
                     // also acts as output buffer from the slave, so that slaves with playback enabled are happy.
                     // However, this is a pure dummy-sink, the data written by the slave isn't used for anything,
                     // but simply discarded, as output capture slaves have no meaningful sink for their output.
-                    paCallback( (const void*) dev->slaveOutBuffer, (void*) dev->slaveOutBuffer, (unsigned long) dev->batchsize, timeInfo, statusFlags, (void*) &(audiodevices[slaveId]));
+                    paCallback( (const void*) dev->slaveOutBuffer, (void*) dev->slaveOutBuffer, (unsigned long) framesPerBuffer, timeInfo, statusFlags, (void*) &(audiodevices[slaveId]));
                 }
 
                 // One more slave handled:
@@ -1516,7 +1530,7 @@ static int paCallback( const void *inputBuffer, void *outputBuffer,
 
         // This is the simple case (compared to playback processing).
         // Just copy all available data to our internal buffer:
-        for (i=0; (i < dev->batchsize * inchannels); i++) {
+        for (i=0; (i < framesPerBuffer * inchannels); i++) {
             dev->inputbuffer[recposition % insbsize] = (float) *in++;
             recposition++;
         }
@@ -1740,6 +1754,8 @@ void PsychPACloseStream(int id)
             }
 
             // Destruction for both master- and regular audio devices:
+            if ((audiodevices[id].noTime > 0) && (audiodevices[id].latencyclass > 0) && (verbosity >= 2))
+                printf("PTB-WARNING:PsychPortAudio('Close'): Audio device with handle %i had broken audio timestamping - and therefore timing - during this run. Don't trust the timing!\n", id);
 
             // Close and destroy the hardware portaudio stream:
             Pa_CloseStream(stream);
@@ -1838,7 +1854,7 @@ const char** InitializeSynopsis(void)
     synopsis[i++] = "count = PsychPortAudio('GetOpenDeviceCount');";
     synopsis[i++] = "devices = PsychPortAudio('GetDevices' [,devicetype] [, deviceIndex]);";
     synopsis[i++] = "\nGeneral settings:\n";
-    synopsis[i++] = "[oldyieldInterval, oldMutexEnable, lockToCore1, audioserver_autosuspend] = PsychPortAudio('EngineTunables' [, yieldInterval] [, MutexEnable] [, lockToCore1] [, audioserver_autosuspend]);";
+    synopsis[i++] = "[oldyieldInterval, oldMutexEnable, lockToCore1, audioserver_autosuspend, workarounds] = PsychPortAudio('EngineTunables' [, yieldInterval][, MutexEnable][, lockToCore1][, audioserver_autosuspend][, workarounds]);";
     synopsis[i++] = "oldRunMode = PsychPortAudio('RunMode', pahandle [,runMode]);";
     synopsis[i++] = "\n\nDevice setup and shutdown:\n";
     synopsis[i++] = "pahandle = PsychPortAudio('Open' [, deviceid][, mode][, reqlatencyclass][, freq][, channels][, buffersize][, suggestedLatency][, selectchannels][, specialFlags=0]);";
@@ -1875,7 +1891,34 @@ const char** InitializeSynopsis(void)
     return(synopsisSYNOPSIS);
 }
 
-PaHostApiIndex PsychPAGetLowestLatencyHostAPI(void)
+PaHostApiIndex PsychPAGetHighLatencyHostAPI(void)
+{
+    PaHostApiIndex ai;
+
+    #if PSYCH_SYSTEM == PSYCH_LINUX
+    // Try PulseAudio first:
+    if (((ai=Pa_HostApiTypeIdToHostApiIndex(paPulseAudio))!=paHostApiNotFound) && !pulseaudio_isSuspended && (Pa_GetHostApiInfo(ai)->deviceCount > 0)) return(ai);
+
+    // Then JACK...
+    if (((ai=Pa_HostApiTypeIdToHostApiIndex(paJACK))!=paHostApiNotFound) && (Pa_GetHostApiInfo(ai)->deviceCount > 0)) return(ai);
+
+    // Then ALSA, which will not allow for audio device sharing...
+    if (((ai=Pa_HostApiTypeIdToHostApiIndex(paALSA))!=paHostApiNotFound) && (Pa_GetHostApiInfo(ai)->deviceCount > 0)) return(ai);
+
+    // Then OSS as a last resort, with same limitations as ALSA + bad timing...
+    if (((ai=Pa_HostApiTypeIdToHostApiIndex(paOSS))!=paHostApiNotFound) && (Pa_GetHostApiInfo(ai)->deviceCount > 0)) return(ai);
+
+    // ...then give up!
+    printf("PTB-ERROR: Could not find an operational audio subsystem on this Linux machine! Soundcard and driver installed and enabled?!?\n");
+    return(paHostApiNotFound);
+    #endif
+
+    // For other operating systems, ie. Window/macOS, choose the OS default api:
+    ai = Pa_GetDefaultHostApi();
+    return(ai);
+}
+
+PaHostApiIndex PsychPAGetLowestLatencyHostAPI(int latencyclass)
 {
     PaHostApiIndex ai;
 
@@ -1885,30 +1928,54 @@ PaHostApiIndex PsychPAGetLowestLatencyHostAPI(void)
     #endif
 
     #if PSYCH_SYSTEM == PSYCH_LINUX
-    // Try ALSA first...
+    // Want low-latency, but also sharing of audio device with other audio clients, ie. latencyclass == 1?
+    if (latencyclass <= 1) {
+        // Try collaborative backends first: First JACK, which is low latency / high precision and also allows sharing:
+        if (((ai=Pa_HostApiTypeIdToHostApiIndex(paJACK))!=paHostApiNotFound) && (Pa_GetHostApiInfo(ai)->deviceCount > 0)) return(ai);
+
+        // Then PulseAudio if there ain't no JACK installed/running/ready. PulseAudio gives reasonable timing / latency and allows sharing:
+        if (((ai=Pa_HostApiTypeIdToHostApiIndex(paPulseAudio))!=paHostApiNotFound) && !pulseaudio_isSuspended && (Pa_GetHostApiInfo(ai)->deviceCount > 0)) return(ai);
+
+        // If none of these is available, continue with exclusive api's like ALSA:
+    }
+
+    // latencyclass >= 2 for exclusive audio device access at best timing / lowest latencies, or fallback for latencyclass 1 if
+    // neither JACK nor PulseAudio are available:
+
+    // Try ALSA first... No sharing, best timing and latency:
     if (((ai=Pa_HostApiTypeIdToHostApiIndex(paALSA))!=paHostApiNotFound) && (Pa_GetHostApiInfo(ai)->deviceCount > 0)) return(ai);
+
     // Then JACK...
     if (((ai=Pa_HostApiTypeIdToHostApiIndex(paJACK))!=paHostApiNotFound) && (Pa_GetHostApiInfo(ai)->deviceCount > 0)) return(ai);
+
+    // Then PulseAudio
+    if (((ai=Pa_HostApiTypeIdToHostApiIndex(paPulseAudio))!=paHostApiNotFound) && !pulseaudio_isSuspended && (Pa_GetHostApiInfo(ai)->deviceCount > 0)) return(ai);
+
     // Then OSS...
     if (((ai=Pa_HostApiTypeIdToHostApiIndex(paOSS))!=paHostApiNotFound) && (Pa_GetHostApiInfo(ai)->deviceCount > 0)) return(ai);
+
     // then give up!
     printf("PTB-ERROR: Could not find an operational audio subsystem on this Linux machine! Soundcard and driver installed and enabled?!?\n");
     return(paHostApiNotFound);
     #endif
 
     #if PSYCH_SYSTEM == PSYCH_WINDOWS
-    #ifdef PTB_USE_ASIO
-    // Try ASIO first. It's supposed to be the lowest latency Windows API on soundcards that suppport it.
+    // Try ASIO first. It is supposed to be the lowest latency Windows API on soundcards that suppport it, iff a 3rd party ASIO
+    // enabled portaudio dll would be used to enable it. Psychtoolbox own portaudio dll does not support ASIO at all.
     if (((ai=Pa_HostApiTypeIdToHostApiIndex(paASIO))!=paHostApiNotFound) && (Pa_GetHostApiInfo(ai)->deviceCount > 0)) return(ai);
-    #endif
+
     // Then Vistas new WASAPI, which is supposed to be usable since around Windows-7 and pretty good since Windows-10:
     if (((ai=Pa_HostApiTypeIdToHostApiIndex(paWASAPI))!=paHostApiNotFound) && (Pa_GetHostApiInfo(ai)->deviceCount > 0)) return(ai);
+
     // Then WDM kernel streaming Win2000 and later. This is the best builtin sound system we get on pre Windows-7:
     if (((ai=Pa_HostApiTypeIdToHostApiIndex(paWDMKS))!=paHostApiNotFound) && (Pa_GetHostApiInfo(ai)->deviceCount > 0)) return(ai);
+
     // Then DirectSound: Bad, but not a complete disaster if the sound card has DS native drivers:
     if (((ai=Pa_HostApiTypeIdToHostApiIndex(paDirectSound))!=paHostApiNotFound) && (Pa_GetHostApiInfo(ai)->deviceCount > 0)) return(ai);
+
     // Then Windows MME, a complete disaster, but better than silence...?!?
     if (((ai=Pa_HostApiTypeIdToHostApiIndex(paMME))!=paHostApiNotFound) && (Pa_GetHostApiInfo(ai)->deviceCount > 0)) return(ai);
+
     // then give up!
     printf("PTB-ERROR: Could not find an operational audio subsystem on this Windows machine! Soundcard and driver installed and enabled?!?\n");
     return(paHostApiNotFound);
@@ -1960,11 +2027,10 @@ PsychError PsychPortAudioExit(void)
         }
 
         // Detach our callback function for low-level debug output:
-        PaUtil_SetDebugPrintFunction(NULL);
+        PsychPAPaUtil_SetDebugPrintFunction(NULL);
 
         #if PSYCH_SYSTEM == PSYCH_LINUX
-            // Disable ALSA error handler:
-            snd_lib_error_set_handler(NULL);
+            // Disable Jack error handler:
             if (myjack_set_error_function) {
                 myjack_set_error_function(NULL);
                 myjack_set_error_function = NULL;
@@ -1988,6 +2054,13 @@ PsychError PsychPortAudioExit(void)
             pulseaudio_isSuspended = FALSE;
         }
     }
+
+    #if PSYCH_SYSTEM == PSYCH_LINUX
+        // Always disable ALSA error handler, as it could have been set in 'Verbosity' to
+        // our internal function, so a jettison of PsychPortAudio would leave a dangling
+        // pointer from libasound to that internal error handler which no longer exists:
+        snd_lib_error_set_handler(NULL);
+    #endif
 
     return(PsychError_none);
 }
@@ -2024,10 +2097,10 @@ void PsychPortAudioInitialize(void)
 
         #if PSYCH_SYSTEM == PSYCH_WINDOWS
         // Sanity check dynamic portaudio dll loading on Windows:
-        if ((NULL == LoadLibrary("portaudio_x86.dll")) && (NULL == LoadLibrary("portaudio_x64.dll"))) {
+        if (NULL == LoadLibrary(PORTAUDIO_DLLNAME)) {
             // Failed:
             printf("\n\nPTB-ERROR: Tried to initialize PsychPortAudio's PortAudio engine. This didn't work,\n");
-            printf("PTB-ERROR: because i couldn't find or load the required portaudio_x86.dll or portaudio_x64.dll library.\n");
+            printf("PTB-ERROR: because i couldn't find or load the required %s library.\n", PORTAUDIO_DLLNAME);
             printf("PTB-ERROR: Please make sure to call the InitializePsychSound function before first use of\n");
             printf("PTB-ERROR: PsychPortAudio, otherwise this error will happen.\n\n");
             PsychErrorExitMsg(PsychError_user, "Failed to initialize due to portaudio DLL loading problem. Call InitializePsychSound first! Aborted.");
@@ -2035,7 +2108,7 @@ void PsychPortAudioInitialize(void)
         #endif
 
         // Setup callback function for low-level debug output:
-        PaUtil_SetDebugPrintFunction(PALogger);
+        PsychPAPaUtil_SetDebugPrintFunction(PALogger);
 
         #if PSYCH_SYSTEM == PSYCH_LINUX
             // Set an error handler for ALSA debug output/errors to stop the spewage of utterly
@@ -2060,12 +2133,12 @@ void PsychPortAudioInitialize(void)
 
         if ((err=Pa_Initialize())!=paNoError) {
             printf("PTB-ERROR: Portaudio initialization failed with following port audio error: %s \n", Pa_GetErrorText(err));
-            PaUtil_SetDebugPrintFunction(NULL);
+            PsychPAPaUtil_SetDebugPrintFunction(NULL);
             PsychErrorExitMsg(PsychError_system, "Failed to initialize PortAudio subsystem.");
         }
         else {
             if(verbosity>2) {
-                printf("PTB-INFO: Using modified %s\n", Pa_GetVersionText());
+                printf("PTB-INFO: Using %s\n", Pa_GetVersionText());
             }
         }
 
@@ -2143,13 +2216,22 @@ PsychError PSYCHPORTAUDIOOpen(void)
     "two of the 16 channels to use for playback. 'selectchannels' is a one row by 'channels' matrix with mappings "
     "for pure playback or pure capture. For full-duplex mode (playback and capture), 'selectchannels' must be a "
     "2 rows by max(channels) column matrix. row 1 will define playback channel mappings, whereas row 2 will then "
-    "define capture channel mappings. In any case, the number in the i'th column will define which physical device "
+    "define capture channel mappings. Ideally, the number in the i'th column will define which physical device "
     "channel will be used for playback or capture of the i'th PsychPortAudio channel (the i'th row of your sound "
-    "matrix). Numbering of physical device channels starts with zero! Example: Both, playback and simultaneous "
-    "recording are requested and 'channels' equals 2, ie, two playback channels and two capture channels. If you'd "
-    "specify 'selectchannels' as [0, 6 ; 12, 14], then playback would happen to device channels zero and six, "
-    "sound would be captured from device channels 12 and 14. Please note that channel selection is currently "
-    "only supported on some sound cards. The parameter is silently ignored on non-capable hardware or driver software.\n\n"
+    "matrix), but note various significant limitations on MS-Windows! Numbering of physical device channels starts "
+    "with zero! Example: Both, playback and simultaneous recording are requested and 'channels' equals 2, ie. two "
+    "playback channels and two capture channels. If you'd specify 'selectchannels' as [0, 6 ; 12, 14], then playback "
+    "would happen to device channels zero and six, sound would be captured from device channels 12 and 14.\n"
+    "Limitations: Please note that 'selectchannels' is currently only supported on macOS and on Windows WASAPI and only "
+    "with some sound cards in some configurations. The parameter is silently ignored on non-capable hardware/driver/operating "
+    "system software, or in unsupported configurations, e.g., it will do nothing on Linux, or on Windows with other sound "
+    "backends than WASAPI. On Windows, channel mapping only works for sound playback, not for sound capture. On Windows, "
+    "you can only select which physical sound channels are used, but not to which logical sound channel they are assigned. "
+    "This means that effectively the entries in the 'selectchannels' row vector will get sorted in ascending order, e.g., "
+    "a vector of [12, 0, 4, 2] for a 4 channel setup will be interpreted as if it were [0, 2, 4, 12]! This is a limitation "
+    "of the Windows sound system, nothing we could do about it.\n"
+    "All these limitations of 'selectchannels' make your scripts quite non-portable to different operating systems and "
+    "sound cards if you choose to use this parameter, so use with caution!\n\n"
     "'specialFlags' Optional flags: Default to zero, can be or'ed or added together with the following flags/settings:\n"
     "1 = Never prime output stream. By default the output stream is primed. Don't bother if you don't know what this means.\n"
     "2 = Always clamp audio data to the valid -1.0 to 1.0 range. Clamping is enabled by default.\n"
@@ -2250,21 +2332,21 @@ PsychError PSYCHPORTAUDIOOpen(void)
 
     if (deviceid == -1) {
         // Default devices requested:
-        if ((latencyclass == 0) && (PSYCH_SYSTEM != PSYCH_LINUX)) {
-            // High latency mode on non-Linux. Simply pick system default devices.
-            // We don't pick these on Linux, because we'd end up with the ancient
-            // OSS, which is almost always a suboptimal choice for our purpose, even
-            // in high-latency mode.
-            outputParameters.device = Pa_GetDefaultOutputDevice(); /* Default output device. */
-            inputParameters.device  = Pa_GetDefaultInputDevice(); /* Default input device. */
+        if (latencyclass == 0) {
+            // High latency mode. Picks system default devices on non-Linux, from
+            // default host api. On Linux we try PulseAudio, Jack, ALSA, OSS in
+            // that order, from shared+good timing to exclusive to bad.
+            paHostAPI = PsychPAGetHighLatencyHostAPI();
         }
         else {
-            // Low latency mode: Try to find the host API which is supposed to be the fastest on
-            // a platform, then pick its default devices:
-            paHostAPI = PsychPAGetLowestLatencyHostAPI();
-            outputParameters.device = Pa_GetHostApiInfo(paHostAPI)->defaultOutputDevice;
-            inputParameters.device  = Pa_GetHostApiInfo(paHostAPI)->defaultInputDevice;
+            // Low latency mode. Try to find the host API which is supposed to be the
+            // most suitable one for given latencyclass on a platform:
+            paHostAPI = PsychPAGetLowestLatencyHostAPI(latencyclass);
         }
+
+        // Pick default in/out devices of selected host api backend:
+        outputParameters.device = Pa_GetHostApiInfo(paHostAPI)->defaultOutputDevice;
+        inputParameters.device  = Pa_GetHostApiInfo(paHostAPI)->defaultInputDevice;
 
         // Make sure we don't choose a default audio output device which is likely to
         // send its output to nirvana. If this is the case, try to find a better alternative.
@@ -2278,7 +2360,7 @@ PsychError PSYCHPORTAUDIOOpen(void)
             outputDevInfo = Pa_GetDeviceInfo(outputParameters.device);
             if (outputDevInfo && (Pa_GetDeviceCount() > 1) &&
                 (strstr(outputDevInfo->name, "HDMI") || strstr(outputDevInfo->name, "hdmi") || strstr(outputDevInfo->name, "isplay") ||
-                 ((outputDevInfo->hostApi == Pa_HostApiTypeIdToHostApiIndex(paALSA)) && pulseaudio_isSuspended && (strstr(outputDevInfo->name, "default") || strstr(outputDevInfo->name, "pulse"))))) {
+                 ((outputDevInfo->hostApi == Pa_HostApiTypeIdToHostApiIndex(paALSA)) && (pulseaudio_isSuspended || latencyclass > 0) && (!strcmp(outputDevInfo->name, "default") || strstr(outputDevInfo->name, "pulse"))))) {
                 // Selected output default device seems to be a HDMI or DisplayPort output
                 // of a graphics card. Try to find a better default choice.
                 paHostAPI = outputDevInfo->hostApi;
@@ -2288,7 +2370,7 @@ PsychError PSYCHPORTAUDIOOpen(void)
                     if (!referenceDevInfo || (referenceDevInfo->hostApi != paHostAPI) ||
                         (referenceDevInfo->maxOutputChannels < 1) ||
                         (strstr(referenceDevInfo->name, "HDMI") || strstr(referenceDevInfo->name, "hdmi") || strstr(referenceDevInfo->name, "isplay") ||
-                        ((referenceDevInfo->hostApi == Pa_HostApiTypeIdToHostApiIndex(paALSA)) && pulseaudio_isSuspended && (strstr(referenceDevInfo->name, "default") || strstr(referenceDevInfo->name, "pulse"))))) {
+                        ((referenceDevInfo->hostApi == Pa_HostApiTypeIdToHostApiIndex(paALSA)) && (pulseaudio_isSuspended || latencyclass > 0) && (!strcmp(referenceDevInfo->name, "default") || strstr(referenceDevInfo->name, "pulse"))))) {
                         // Unsuitable.
                         continue;
                     }
@@ -2326,7 +2408,7 @@ PsychError PSYCHPORTAUDIOOpen(void)
             inputDevInfo = Pa_GetDeviceInfo(inputParameters.device);
             if (inputDevInfo && (Pa_GetDeviceCount() > 1) &&
                 (strstr(inputDevInfo->name, "HDMI") || strstr(inputDevInfo->name, "hdmi") || strstr(inputDevInfo->name, "isplay") ||
-                 ((inputDevInfo->hostApi == Pa_HostApiTypeIdToHostApiIndex(paALSA)) && pulseaudio_isSuspended && (strstr(inputDevInfo->name, "default") || strstr(inputDevInfo->name, "pulse"))))) {
+                 ((inputDevInfo->hostApi == Pa_HostApiTypeIdToHostApiIndex(paALSA)) && (pulseaudio_isSuspended || latencyclass > 0) && (!strcmp(inputDevInfo->name, "default") || strstr(inputDevInfo->name, "pulse"))))) {
                 // Selected input default device seems to be a HDMI or DisplayPort output
                 // of a graphics card. Try to find a better default choice.
                 paHostAPI = inputDevInfo->hostApi;
@@ -2336,7 +2418,7 @@ PsychError PSYCHPORTAUDIOOpen(void)
                     if (!referenceDevInfo || (referenceDevInfo->hostApi != paHostAPI) ||
                         (referenceDevInfo->maxInputChannels < 1) ||
                         (strstr(referenceDevInfo->name, "HDMI") || strstr(referenceDevInfo->name, "hdmi") || strstr(referenceDevInfo->name, "isplay") ||
-                        ((referenceDevInfo->hostApi == Pa_HostApiTypeIdToHostApiIndex(paALSA)) && pulseaudio_isSuspended && (strstr(referenceDevInfo->name, "default") || strstr(referenceDevInfo->name, "pulse"))))) {
+                        ((referenceDevInfo->hostApi == Pa_HostApiTypeIdToHostApiIndex(paALSA)) && (pulseaudio_isSuspended || latencyclass > 0) && (!strcmp(referenceDevInfo->name, "default") || strstr(referenceDevInfo->name, "pulse"))))) {
                         // Unsuitable.
                         continue;
                     }
@@ -2549,9 +2631,12 @@ PsychError PSYCHPORTAUDIOOpen(void)
                     channelMask |= (PaWinWaveFormatChannelMask) (1 << ((int) mychannelmap[i * m]));
 
                 if (verbosity > 3) {
+                    int j = 0;
+
                     printf("PTB-INFO: Will try to use the following logical channel -> device channel mappings for sound output to audio stream %i :\n", id);
-                    for (i = 0; i < mynrchannels[0]; i++)
-                        printf("%i --> %i : ", i + 1, (int) mychannelmap[i * m]);
+                    for (i = 0; (i < sizeof(PaWinWaveFormatChannelMask) * 8) && (j < mynrchannels[0]); i++)
+                        if (channelMask & (1 << i))
+                            printf("%i --> %i : ", ++j, i);
 
                     printf("\n\n");
                 }
@@ -2578,10 +2663,14 @@ PsychError PSYCHPORTAUDIOOpen(void)
                         outwasapiapisettings.channelMask = channelMask;
                         break;
                     */
+
+                    default: // Unsupported backend for channel mapping:
+                        if (verbosity > 3)
+                            printf("PTB-INFO: 'selectchannels' mapping for audio playback is ignored on this hardware + driver combo.\n");
                 }
             }
 
-            // Windows api's can't do channel mapping on the capture side, i think?
+            // Windows builtin sound api's can't do channel mapping on the capture side:
             if ((mode & kPortAudioCapture) && (verbosity > 3)) {
                 printf("PTB-INFO: Audio capture enabled, but 'selectchannels' mapping for audio capture is ignored on this hardware + driver combo.\n");
             }
@@ -2711,14 +2800,8 @@ PsychError PSYCHPORTAUDIOOpen(void)
 
     // Setup samplerate:
     if (freq == 0) {
-        // No specific frequency requested:
-        if (latencyclass < 3) {
-            // At levels < 3, we select the device specific default.
-            freq = referenceDevInfo->defaultSampleRate;
-        }
-        else {
-            freq = 96000; // Go really high...
-        }
+        // No specific frequency requested, so choose device default:
+        freq = referenceDevInfo->defaultSampleRate;
     }
 
     // Now we have auto-selected frequency or user provided override...
@@ -2743,7 +2826,6 @@ PsychError PSYCHPORTAUDIOOpen(void)
             lowlatency = 0.05;  // Choose some half-way safe tradeoff: 50 msecs.
             break;
 
-        #ifdef PTB_USE_ASIO
         case paASIO:
             // ASIO: A value of zero would set safe (and high latency!) defaults. Too small values get
             // clamped to a safe minimum by the driver, so we select a very small positive value, say
@@ -2751,7 +2833,6 @@ PsychError PSYCHPORTAUDIOOpen(void)
             // we play a bit safer and go for 5 msecs:
             lowlatency = (latencyclass >= 2) ? 0.001 : 0.005;
             break;
-        #endif
 
         case paALSA:
             // For ALSA we choose 10 msecs by default, lowering to 5 msecs if exp. requested. Experience
@@ -2761,14 +2842,19 @@ PsychError PSYCHPORTAUDIOOpen(void)
             lowlatency = (latencyclass > 2) ? 0.005 : 0.010;
             break;
 
+        case paPulseAudio:
+            // 10 msecs is fine on a typical 500 Euros PC from 2019, but 5 msecs is aggressive:
+            lowlatency = (latencyclass > 2) ? 0.005 : 0.010;
+            break;
+
         default:            // Not the safest assumption for non-verified Api's, but we'll see...
             lowlatency = 0.0;
     }
 
     if (suggestedLatency == -1.0) {
         // None provided: Choose default based on latency mode:
-        outputParameters.suggestedLatency = (latencyclass == 0 && outputDevInfo) ? outputDevInfo->defaultHighOutputLatency : lowlatency;
-        inputParameters.suggestedLatency  = (latencyclass == 0 && inputDevInfo) ? inputDevInfo->defaultHighInputLatency : lowlatency;
+        outputParameters.suggestedLatency = (latencyclass == 0 && outputDevInfo && (outputDevInfo->defaultHighOutputLatency > lowlatency)) ? outputDevInfo->defaultHighOutputLatency : lowlatency;
+        inputParameters.suggestedLatency  = (latencyclass == 0 && inputDevInfo && (inputDevInfo->defaultHighInputLatency > lowlatency)) ? inputDevInfo->defaultHighInputLatency : lowlatency;
 
         // Make sure that requested high or default output latency on Apples trainwreck is never lower than 10 msecs.
         // Especially on macOS 10.14 this seems to be neccessary for crackle-free playback: (Forum message #23422)
@@ -2828,41 +2914,63 @@ PsychError PSYCHPORTAUDIOOpen(void)
     // specialFlags 16: Never dither audio data:
     if (specialFlags & 16) sflags |= paDitherOff;
 
+    // Assume no validation error, in case we skip Pa_IsFormatSupported() validation:
+    err = paNoError;
+
     #if PSYCH_SYSTEM == PSYCH_LINUX
+        int major, minor;
+
         // On ALSA in aggressive low-latency mode, reduce number of periods (aka device buffers) to 2 for double-buffering.
         // The default in Portaudio is 4 periods, so that's what we use in non-aggressive mode
         if (Pa_GetHostApiInfo(referenceDevInfo->hostApi)->type == paALSA)
             PaAlsa_SetNumPeriods((latencyclass > 2) ? 2 : 4);
-    #endif
 
-    // Check if the requested sample format and settings are likely supported by Audio API:
-    // Note: The Portaudio library on Linux, as of Ubuntu 20.10, has a very old bug in the ALSA backend code of Pa_IsFormatSupported(),
-    //       which asks the Linux kernel to test-allocate an absurdly huge amount of audio hardware buffer space. While this bug lay dormant,
-    //       not triggering on older Linux kernels for the last 13+ years, Linux 5.6 introduced a configurable limit of allowable max hw buffer size.
-    //       At a default of 32 MB, the limit is massively exceeded by Pa_IsFormatSupported() even in the most trivial configurations, e.g.,
-    //       requesting 59.9 MB or memory for a simple 44.1Khz stereo stream! The result is the Linux 5.6+ kernel rejecting the request, which
-    //       leads to a false positive failure of Pa_IsFormatSupported() with paUnanticipatedHostError!
-    //       Workaround: We just skip the check on Linux atm., until upstream Portaudio is fixed, and luckily the actual Pa_OpenStream()
-    //       function below will request very reasonable settings during execution, which the kernel happily accepts, e.g., only 15 kB in
-    //       the same scenario. This way we can continue working against the flawed Portaudio library shipping with Ubuntu 20.10.
-    if (PSYCH_SYSTEM != PSYCH_LINUX)
-        err = Pa_IsFormatSupported(((mode & kPortAudioCapture) ?  &inputParameters : NULL), ((mode & kPortAudioPlayBack) ? &outputParameters : NULL), freq);
-    else
-        err = paNoError;
+        // Check if the requested sample format and settings are likely supported by Audio API:
+        // Note: The Portaudio library on Linux, as of Ubuntu 20.10, has a very old bug in the ALSA backend code of Pa_IsFormatSupported(),
+        //       which asks the Linux kernel to test-allocate an absurdly huge amount of audio hardware buffer space. While this bug lay dormant,
+        //       not triggering on older Linux kernels for the last 13+ years, Linux 5.6 introduced a configurable limit of allowable max hw buffer size.
+        //       At a default of 32 MB, the limit is massively exceeded by Pa_IsFormatSupported() even in the most trivial configurations, e.g.,
+        //       requesting 59.9 MB or memory for a simple 44.1Khz stereo stream! The result is the Linux 5.6+ kernel rejecting the request, which
+        //       leads to a false positive failure of Pa_IsFormatSupported() with paUnanticipatedHostError!
+        //       Workaround: We just skip the check on Linux atm., until upstream Portaudio is fixed, and luckily the actual Pa_OpenStream()
+        //       function below will request very reasonable settings during execution, which the kernel happily accepts, e.g., only 15 kB in
+        //       the same scenario. This way we can continue working against the flawed Portaudio library shipping with Ubuntu 20.10.
+
+        // Find out which kernel we are running on:
+        PsychOSGetLinuxVersion(&major, &minor, NULL);
+
+        // Pa_IsFormatSupported() should be fine on Linux 5.13 and later, due to a kernel fix for this overallocation issue, cfe.
+        // https://github.com/alsa-project/alsa-lib/issues/125 and kernel commit 12b2b508300d08206674bfb3f53bb84f69cf2555
+        // Corresponding Portaudio issue: https://github.com/PortAudio/portaudio/issues/526
+        //
+        // Execute check if Linux is 5.13+, skip otherwise with err = paNoError. Our setup will always execute the check on non-Linux:
+        if ((major > 5) || (major == 5 && minor >= 13))
+    #endif
+            if (!(workaroundsMask & 0x2)) // Only perform test if not disabled by workaround bit 1.
+                err = Pa_IsFormatSupported(((mode & kPortAudioCapture) ?  &inputParameters : NULL), ((mode & kPortAudioPlayBack) ? &outputParameters : NULL), freq);
 
     if ((err != paNoError) && (err != paDeviceUnavailable)) {
-        printf("PTB-ERROR: Desired audio parameters for device %i unsupported by audio device: %s \n", deviceid, Pa_GetErrorText(err));
-        if (err == paInvalidSampleRate) {
-            printf("PTB-ERROR: Seems the requested audio sample rate %lf Hz is not supported by this combo of hardware and sound driver.\n", freq);
-        } else if (err == paInvalidChannelCount) {
-            printf("PTB-ERROR: Seems the requested number of audio channels is not supported by this combo of hardware and sound driver.\n");
-        } else {
-            printf("PTB-ERROR: This could be, e.g., due to an unsupported combination of audio sample rate, audio channel count/allocation, or audio sample format.\n");
+        if (verbosity > 0) {
+            printf("PTB-ERROR: Desired audio parameters for device %i seem to be unsupported by audio device: %s \n", deviceid, Pa_GetErrorText(err));
+            if (err == paInvalidSampleRate) {
+                printf("PTB-ERROR: Seems the requested audio sample rate %lf Hz is not supported by this combo of hardware and sound driver.\n", freq);
+            } else if (err == paInvalidChannelCount) {
+                printf("PTB-ERROR: Seems the requested number of audio channels is not supported by this combo of hardware and sound driver.\n");
+            } else if (err == paSampleFormatNotSupported) {
+                printf("PTB-ERROR: Seems the requested audio sample format is not supported by this combo of hardware and sound driver.\n");
+            } else {
+                printf("PTB-ERROR: This could be, e.g., due to an unsupported combination of timing, sample rate, audio channel count/allocation, or sample format.\n");
+            }
+
+            if (PSYCH_SYSTEM == PSYCH_LINUX)
+                printf("PTB-ERROR: On Linux you may be able to use ALSA audio converter plugins to make this work.\n");
         }
 
-        if (PSYCH_SYSTEM == PSYCH_LINUX)
-            printf("PTB-ERROR: On Linux you may be able to use ALSA audio converter plugins to make this work.\n");
-        PsychErrorExitMsg(PsychError_user, "Failed to open PortAudio audio device due to unsupported combination of audio parameters.");
+        // Only abort on test failure if workaround bit 0 not set:
+        if (!(workaroundsMask & 0x1))
+            PsychErrorExitMsg(PsychError_user, "Failed to open PortAudio audio device due to unsupported combination of audio parameters. Prevalidation failure.");
+        else
+            err = paNoError;
     }
 
     // Try to create & open stream:
@@ -2875,15 +2983,16 @@ PsychError PSYCHPORTAUDIOOpen(void)
                             buffersize,                                                     /* Requested buffer size. */
                             sflags,                                                         /* Define special stream property flags. */
                             paCallback,                                                     /* Our processing callback. */
-                            &audiodevices[id]);                               /* Our own device info structure */
+                            &audiodevices[id]);                                             /* Our own device info structure */
 
     if (err != paNoError || stream == NULL) {
         printf("PTB-ERROR: Failed to open audio device %i. PortAudio reports this error: %s \n", deviceid, Pa_GetErrorText(err));
         if (err == paDeviceUnavailable) {
-            printf("PTB-ERROR: Could not open audio device, most likely because it is already in use by a previous call to\n");
-            printf("PTB-ERROR: PsychPortAudio('Open', ...). You can open each audio device only once per session. If you need\n");
+            printf("PTB-ERROR: Could not open audio device, most likely because it is already in exclusive use by a previous call\n");
+            printf("PTB-ERROR: to PsychPortAudio('Open', ...). You can open each exclusive device only once per session. If you need\n");
             printf("PTB-ERROR: multiple independent devices simulated on one physical audio device, look into use of audio\n");
             printf("PTB-ERROR: slave devices. See help for this by typing 'PsychPortAudio OpenSlave?'.\n");
+
             PsychErrorExitMsg(PsychError_user, "Audio device unavailable. Most likely tried to open device multiple times.");
         }
         else {
@@ -2892,21 +3001,23 @@ PsychError PSYCHPORTAUDIOOpen(void)
                 printf("PTB-ERROR: Seems the requested audio sample rate %lf Hz is not supported by this combo of hardware and sound driver.\n", freq);
             } else if (err == paInvalidChannelCount) {
                 printf("PTB-ERROR: Seems the requested number of audio channels is not supported by this combo of hardware and sound driver.\n");
+            } else if (err == paSampleFormatNotSupported) {
+                printf("PTB-ERROR: Seems the requested audio sample format is not supported by this combo of hardware and sound driver.\n");
             } else {
-                printf("PTB-ERROR: This could be, e.g., due to an unsupported combination of audio sample rate, audio channel count/allocation, or audio sample format.\n");
+                printf("PTB-ERROR: This could be, e.g., due to an unsupported combination of timing, sample rate, audio channel count/allocation, or sample format.\n");
             }
 
             if (PSYCH_SYSTEM == PSYCH_LINUX)
                 printf("PTB-ERROR: On Linux you may be able to use ALSA audio converter plugins to make this work.\n");
-            PsychErrorExitMsg(PsychError_user, "Failed to open PortAudio audio device due to unsupported combination of audio parameters.");
-        }
 
-        PsychErrorExitMsg(PsychError_system, "Failed to open PortAudio audio device.");
+            PsychErrorExitMsg(PsychError_user, "Failed to open PortAudio audio device due to some unsupported combination of audio parameters.");
+        }
     }
 
     // Setup our final device structure:
     audiodevices[id].opmode = mode;
     audiodevices[id].runMode = 1; // Keep engine running by default. Minimal extra cpu-load for significant reduction in startup latency.
+    audiodevices[id].latencyclass = latencyclass;
     audiodevices[id].stream = stream;
     audiodevices[id].streaminfo = Pa_GetStreamInfo(stream);
     audiodevices[id].hostAPI = Pa_GetHostApiInfo(referenceDevInfo->hostApi)->type;
@@ -2978,74 +3089,6 @@ PsychError PSYCHPORTAUDIOOpen(void)
     // Register the stream finished callback:
     Pa_SetStreamFinishedCallback(audiodevices[id].stream, PAStreamFinishedCallback);
 
-    #if PSYCH_SYSTEM == PSYCH_LINUX
-        // Enable realtime scheduling for the portaudio audio processing thread on ALSA:
-        if (audiodevices[id].hostAPI == paALSA) {
-            PaAlsa_EnableRealtimeScheduling(audiodevices[id].stream, 1);
-
-            // Is a hack-fix needed for a bug present in all versions of libportaudio
-            // earlier than 19.7? The bug triggers in pure half-duplex audio capture
-            // mode (== no playback requested) and consists of erroneously switching
-            // the hostBufferSizeMode of the PaBufferProcessor for capture streams from
-            // paUtilFixedHostBufferSize to paUtilBoundedHostBufferSize, causing
-            // misconversion of captured audio somewhere in the bufferProcessor.
-            //
-            // The offending (buggy) if () conditional is at the end of the function
-            // PaAlsaStream_DetermineFramesPerBuffer() inside pa_linux_alsa.c. It looks
-            // like this: if( !self->playback.canMmap || !accurate ) ..., when it should look
-            // like this: if((!self->playback.canMmap && self->playback.pcm) || !accurate ) ...
-            // in order to prevent the invalid !self->playback.canMmap check, which always
-            // evaluates to "true" if playback is not actually used in pure capture mode.
-            //
-            // We can't prevent the mis-setting of hostBufferSizeMode to paUtilBoundedHostBufferSize,
-            // but we can reset it to the correct paUtilFixedHostBufferSize after Pa_OpenStream()
-            // and before actual start of capture operations, by hacking ourselves into the internal
-            // data structure of the PaBufferProcessor associated with the audio stream.
-            //
-            // We don't apply the fix if usercode specified a buffersize other than
-            // the default paFramesPerBufferUnspecified -- in such a case, switching
-            // to a different hostBufferSizeMode may be required...
-            if (((mode & kPortAudioFullDuplex) == kPortAudioCapture) &&
-                (buffersize == paFramesPerBufferUnspecified) &&
-                (Pa_GetVersion() < paMakeVersionNumber(19,6,1))) {
-                PseudoBufferProcessor* bp;
-
-                // Cast PaStream* into ALSA backend specific AlsaStream*, using the pseudo-
-                // datastructures defined to mimick PortAudio 19.6.0 an earliers true internal
-                // structures:
-                PseudoAlsaStreamExt* myalsaext = (PseudoAlsaStreamExt*) audiodevices[id].stream;
-                if ((myalsaext->streamRepresentation.magic == PA_STREAM_MAGIC) &&
-                    (myalsaext->streamRepresentation.hostApiType == paALSA)) {
-                    bp = &myalsaext->bufferProcessor;
-                    if (verbosity > 5)
-                        printf("PTB-DEBUG: Probed PaAlsaStream struct is from patched portaudio with portmixer.patch (Ubuntu style).\n");
-                }
-                else {
-                    PseudoAlsaStream* myalsa = (PseudoAlsaStream*) audiodevices[id].stream;
-                    if (myalsa->streamRepresentation.magic == PA_STREAM_MAGIC) {
-                        bp = &myalsa->bufferProcessor;
-                        if (verbosity > 5)
-                            printf("PTB-DEBUG: Probed PaAlsaStream struct is from vanilla upstream portaudio.\n");
-                    }
-                    else {
-                        bp = NULL;
-                        if (verbosity > 1)
-                            printf("PTB-WARNING: Probing PaAlsaStream struct failed! Can't apply half-duplex capture bug workaround for Portaudio v19.6.0!\n");
-                    }
-                }
-
-                // Additional sanity check if we got the casting right, and if our fix-hack is applicable:
-                if (bp && (bp->hostBufferSizeMode == paUtilBoundedHostBufferSize)) {
-                    // Reset to sane mode:
-                    bp->hostBufferSizeMode = paUtilFixedHostBufferSize;
-
-                    if (verbosity > 4)
-                        printf("PTB-INFO: Applying paUtilFixedHostBufferSize workaround for pure half-duplex capture mode.\n");
-                }
-            }
-        }
-    #endif
-
     if (verbosity > 3) {
         printf("PTB-INFO: New audio device %i with handle %i opened as PortAudio stream:\n", deviceid, id);
 
@@ -3112,6 +3155,11 @@ PsychError PSYCHPORTAUDIOOpenSlave(void)
     "The slave-only mode flag 64 (kPortAudioIsOutputCapture) defines a slave capture device that captures audio "
     "data from the *output channels* of the master device, i.e., it records the audio stream that is sent to the "
     "speakers. This may be useful for capturing PsychPortAudio's audio output for documentation or debug purposes.\n\n"
+    "The slave-only mode flag 256 (kPortAudioAMModulatorNeutralIsZero) when combined with the flag 32, will ask "
+    "for creation of an AM modulator which outputs a zero value - and thereby creates silence on the modulated "
+    "channels - when the modulator is stopped. Without this flag, a stopped modulator acts as if no modulator "
+    "is present, ie. sound is output without AM modulation, instead of silence. This only works for AM modulators "
+    "attached to slave output devices, not for AM modulators attached to a physical master device.\n\n"
     "All slave devices share the same settings for latencymode, timing, sampling frequency "
     "and other low-level tunable parameters, because they operate on the same underlying audio hardware.\n\n"
     "'channels' Define total number of playback and capture channels to use. See help for 'Open?' for explanation. "
@@ -3165,6 +3213,12 @@ PsychError PSYCHPORTAUDIOOpenSlave(void)
         // whole audio playback scheduling and buffer facilities:
         if (mode & kPortAudioIsAMModulator) mode |= kPortAudioPlayBack;
 
+        if ((mode & kPortAudioAMModulatorNeutralIsZero) && !(mode & kPortAudioIsAMModulator))
+            PsychErrorExitMsg(PsychError_user, "Invalid mode: Tried to request mode 256 = kPortAudioAMModulatorNeutralIsZero, but this is not an AM modulator slave!");
+
+        if ((mode & kPortAudioAMModulatorNeutralIsZero) && (audiodevices[pamaster].opmode & kPortAudioIsMaster))
+            PsychErrorExitMsg(PsychError_user, "Invalid mode: Tried to request mode 256 = kPortAudioAMModulatorNeutralIsZero, but this AM modulator is attached to a master device, instead of a playback slave! This is not allowed for master devices!");
+
         // Being an output capturer implies special rules:
         if (mode & kPortAudioIsOutputCapture) {
             // The associated master must have output that we can capture, ie., it must be configured for playback:
@@ -3180,7 +3234,7 @@ PsychError PSYCHPORTAUDIOOpenSlave(void)
         // Is mode a subset of the masters mode as required? One valid exception is kPortAudioMonitoring,
         // which is allowed to be present on the slave but missing on the master, as well as the AMModulator
         // mode and output capturer mode:
-        modeExceptions |= kPortAudioMonitoring | kPortAudioIsAMModulator | kPortAudioIsAMModulatorForSlave | kPortAudioIsOutputCapture;
+        modeExceptions |= kPortAudioMonitoring | kPortAudioIsAMModulator | kPortAudioIsAMModulatorForSlave | kPortAudioAMModulatorNeutralIsZero | kPortAudioIsOutputCapture;
         if (((mode & ~modeExceptions) & audiodevices[pamaster].opmode) != (mode & ~modeExceptions)) PsychErrorExitMsg(PsychError_user, "Invalid mode provided: Mode flags are not a subset of the mode flags of the pamaster device!");
         if ((mode < 1) || ((mode & kPortAudioMonitoring) && ((mode & kPortAudioFullDuplex) != kPortAudioFullDuplex))) {
             PsychErrorExitMsg(PsychError_user, "Invalid mode provided: Outside valid range or invalid combination of flags.");
@@ -3451,7 +3505,8 @@ PsychError PSYCHPORTAUDIOOpenSlave(void)
         printf("PTB-INFO: New virtual audio slave device with handle %i opened and attached to parent device handle %i [master %i].\n", id, paparent, pamaster);
 
         if (audiodevices[id].opmode & kPortAudioIsAMModulator) {
-            printf("PTB-INFO: For %i channels amplitude modulation.\n", (int) audiodevices[id].outchannels);
+            printf("PTB-INFO: For %i channels amplitude modulation%s.\n", (int) audiodevices[id].outchannels,
+                   (mode & kPortAudioAMModulatorNeutralIsZero) ? " with silence output when modulator stopped" : "");
         }
         else if (audiodevices[id].opmode & kPortAudioPlayBack) {
             printf("PTB-INFO: For %i channels playback.\n", (int) audiodevices[id].outchannels);
@@ -4645,7 +4700,6 @@ PsychError PSYCHPORTAUDIORescheduleStart(void)
 
     // Reset statistics:
     audiodevices[pahandle].xruns = 0;
-    audiodevices[pahandle].noTime = 0;
     audiodevices[pahandle].captureStartTime = 0;
     audiodevices[pahandle].startTime = 0.0;
     audiodevices[pahandle].estStopTime = 0;
@@ -4761,6 +4815,7 @@ PsychError PSYCHPORTAUDIOStartAudioDevice(void)
     double repetitions = 1;
     double when = 0.0;
     double stopTime = DBL_MAX;
+    psych_bool waitStabilized = FALSE;
 
     // Setup online help:
     PsychPushHelp(useString, synopsisString, seeAlsoString);
@@ -4866,11 +4921,19 @@ PsychError PSYCHPORTAUDIOStartAudioDevice(void)
             // Safeguard: If the stream is not stopped, do it now:
             if (!Pa_IsStreamStopped(audiodevices[pahandle].stream)) Pa_StopStream(audiodevices[pahandle].stream);
 
+            // Reset paCalls to special value to mark 1st call ever:
+            audiodevices[pahandle].paCalls = 0xffffffffffffffff;
+
             // Start engine:
             if ((err=Pa_StartStream(audiodevices[pahandle].stream))!=paNoError) {
                 printf("PTB-ERROR: Failed to start audio device %i. PortAudio reports this error: %s \n", pahandle, Pa_GetErrorText(err));
                 PsychErrorExitMsg(PsychError_system, "Failed to start PortAudio audio device.");
             }
+
+            // The Pulseaudio backend will deliver a batch of invalid timestamps during stream startup, so make
+            // sure we wait for timestamping to stabilize before returning control, and reset the fail counter:
+            if (audiodevices[pahandle].hostAPI == paPulseAudio)
+                waitStabilized = TRUE;
 
             // Reacquire lock:
             PsychPALockDeviceMutex(&audiodevices[pahandle]);
@@ -4891,8 +4954,8 @@ PsychError PSYCHPORTAUDIOStartAudioDevice(void)
         PsychErrorExitMsg(PsychError_user, "Asked to 'waitForStart' of a slave device, but associated master device not even started! Deadlock avoided!");
     }
 
-    // Wait for real start of playback/capture?
-    if (waitForStart > 0) {
+    // Wait for real start of playback/capture? Or forced wait for timestamp stabilization?
+    if (waitForStart > 0 || waitStabilized) {
         // Device will be in state == 1 until playback really starts:
         // We need to enter the first while() loop iteration with
         // the device lock held from above, so the while() loop will iterate at
@@ -4900,6 +4963,18 @@ PsychError PSYCHPORTAUDIOStartAudioDevice(void)
         while (audiodevices[pahandle].state == 1 && Pa_IsStreamActive(audiodevices[pahandle].stream)) {
             // Wait for a state-change before reevaluating the .state:
             PsychPAWaitForChange(&audiodevices[pahandle]);
+        }
+
+        // Playback/Capture is now active. Under Pulseaudio that only happens after timestamping has
+        // stabilized, and has provided its first usable timestamps for proper audio timing, allowing
+        // actual start of playback/capture to happen. Report this, and reset the timestamp failure
+        // counter, as the batch of invalid timestamps during early startup has been dealt with:
+        if (waitStabilized) {
+            if (verbosity > 4)
+                printf("PTB-DEBUG: Timestamping stabilized after Pulseaudio stream startup: failed vs. total = %i / %i\n",
+                       (int) audiodevices[pahandle].noTime, (int) audiodevices[pahandle].paCalls);
+
+            audiodevices[pahandle].noTime = 0;
         }
 
         // Device has started (potentially even already finished for very short sounds!)
@@ -5159,6 +5234,9 @@ PsychError PSYCHPORTAUDIOStopAudioDevice(void)
         PsychCopyOutDoubleArg(4, kPsychArgOptional, -1);
     }
 
+    if ((audiodevices[pahandle].noTime > 0) && (audiodevices[pahandle].latencyclass > 0) && (verbosity >= 2))
+        printf("PTB-WARNING:PsychPortAudio('Stop'): Audio device with handle %i had broken audio timestamping - and therefore timing - during this run. Don't trust the timing!\n", pahandle);
+
     return(PsychError_none);
 }
 
@@ -5224,6 +5302,7 @@ PsychError PSYCHPORTAUDIOGetStatus(void)
     PsychGenericScriptType     *status;
     double currentTime;
     psych_int64 playposition, totalplaycount, recposition;
+    psych_uint64 nrtotalcalls, nrnotime;
 
     const char *FieldNames[]={    "Active", "State", "RequestedStartTime", "StartTime", "CaptureStartTime", "RequestedStopTime", "EstimatedStopTime", "CurrentStreamTime", "ElapsedOutSamples", "PositionSecs", "RecordedSecs", "ReadSecs", "SchedulePosition",
         "XRuns", "TotalCalls", "TimeFailed", "BufferSize", "CPULoad", "PredictedLatency", "LatencyBias", "SampleRate",
@@ -5257,6 +5336,8 @@ PsychError PSYCHPORTAUDIOGetStatus(void)
     totalplaycount = audiodevices[pahandle].totalplaycount;
     playposition = audiodevices[pahandle].playposition;
     recposition = audiodevices[pahandle].recposition;
+    nrtotalcalls = audiodevices[pahandle].paCalls;
+    nrnotime = audiodevices[pahandle].noTime;
     PsychPAUnlockDeviceMutex(&audiodevices[pahandle]);
 
     // Atomic snapshot for remaining fields would only be needed for low-level debugging, so who cares?
@@ -5274,8 +5355,8 @@ PsychError PSYCHPORTAUDIOGetStatus(void)
     PsychSetStructArrayDoubleElement("ReadSecs", 0, ((double)(audiodevices[pahandle].readposition / audiodevices[pahandle].inchannels)) / (double) audiodevices[pahandle].streaminfo->sampleRate, status);
     PsychSetStructArrayDoubleElement("SchedulePosition", 0, audiodevices[pahandle].schedule_pos, status);
     PsychSetStructArrayDoubleElement("XRuns", 0, audiodevices[pahandle].xruns, status);
-    PsychSetStructArrayDoubleElement("TotalCalls", 0, audiodevices[pahandle].paCalls, status);
-    PsychSetStructArrayDoubleElement("TimeFailed", 0, audiodevices[pahandle].noTime, status);
+    PsychSetStructArrayDoubleElement("TotalCalls", 0, nrtotalcalls, status);
+    PsychSetStructArrayDoubleElement("TimeFailed", 0, nrnotime, status);
     PsychSetStructArrayDoubleElement("BufferSize", 0, (double) audiodevices[pahandle].batchsize, status);
     PsychSetStructArrayDoubleElement("CPULoad", 0, (Pa_IsStreamActive(audiodevices[pahandle].stream)) ? Pa_GetStreamCpuLoad(audiodevices[pahandle].stream) : 0.0, status);
     PsychSetStructArrayDoubleElement("PredictedLatency", 0, audiodevices[pahandle].predictedLatency, status);
@@ -5528,25 +5609,17 @@ PsychError PSYCHPORTAUDIOGetDevices(void)
     "'deviceIndex'.\n\n"
     "Each struct contains information about its associated PortAudio device. The optional "
     "parameter 'devicetype' can be used to enumerate only devices of a specific class: \n"
-    #ifdef PTB_USE_ASIO
-    "1=Windows/DirectSound, 2=Windows/MME, 3=Windows/ASIO, 11=Windows/WDMKS, 13=Windows/WASAPI, "
-    #else
     "1=Windows/DirectSound, 2=Windows/MME, 11=Windows/WDMKS, 13=Windows/WASAPI, "
-    #endif
-    "8=Linux/ALSA, 7=Linux/OSS, 12=Linux/JACK, 5=MacOSX/CoreAudio.\n\n"
-    "On OS/X you'll usually only see devices for the CoreAudio API, a first-class audio subsystem. "
-    "On Linux you may have the choice between ALSA, JACK and OSS. ALSA or JACK provide very low "
-    "latencies and very good timing, OSS is an older system which is less capable but not very "
-    "widespread in use anymore. On MS-Windows you'll have the choice between up to 5 different "
+    "8=Linux/ALSA, 7=Linux/OSS, 12=Linux/JACK, 16=Linux/PulseAudio, 5=macOS/CoreAudio.\n\n"
+    "On macOS you'll usually only see devices for the CoreAudio API, a first-class audio subsystem. "
+    "On Linux you may have the choice between ALSA, JACK, PulseAudio and OSS. ALSA or JACK provide very low "
+    "latencies and very good timing, OSS is an older system which is less capable and not in "
+    "widespread in use anymore. On MS-Windows you'll have the choice between multiple different "
     "audio subsystems:\n"
-    #ifdef PTB_USE_ASIO
-    "- If you buy a sound card with ASIO drivers, then you can pick that API for low latency. It "
-    "should give you comparable performance to OS/X or Linux.\n"
-    #endif
     "WASAPI (on Windows-Vista and later), or WDMKS (on Windows-2000/XP) should provide ok latency.\n"
     "DirectSound is the next worst choice if you have hardware with DirectSound support.\n"
     "If everything else fails, you'll be left with MME, a completely unusable API for precise or "
-    "low latency timing.\n"
+    "low latency timing. Current PsychPortAudio only provides reasonably precise timing with WASAPI.\n"
     "\n";
 
     static char seeAlsoString[] = "Open GetDeviceSettings ";
@@ -5781,7 +5854,7 @@ PsychError PSYCHPORTAUDIOSetLoop(void)
  */
 PsychError PSYCHPORTAUDIOEngineTunables(void)
 {
-    static char useString[] = "[oldyieldInterval, oldMutexEnable, lockToCore1, audioserver_autosuspend] = PsychPortAudio('EngineTunables' [, yieldInterval] [, MutexEnable] [, lockToCore1] [, audioserver_autosuspend]);";
+    static char useString[] = "[oldyieldInterval, oldMutexEnable, lockToCore1, audioserver_autosuspend, workarounds] = PsychPortAudio('EngineTunables' [, yieldInterval][, MutexEnable][, lockToCore1][, audioserver_autosuspend][, workarounds]);";
     static char synopsisString[] =
     "Return, and optionally set low-level tuneable driver parameters.\n"
     "The driver must be idle, ie., no audio device must be open, if you want to change tuneables! "
@@ -5810,23 +5883,26 @@ PsychError PSYCHPORTAUDIOEngineTunables(void)
     "can interfere with low level audio device access and low-latency / high-precision audio timing. "
     "For this reason it is a good idea to switch them to standby (suspend) while a PsychPortAudio "
     "session is active. Sometimes this isn't needed or not even desireable. Therefore this option "
-    "allows to inhibit this automatic suspending of audio servers.\n";
+    "allows to inhibit this automatic suspending of audio servers.\n"
+    "'workarounds' A bitmask to enable various workarounds: +1 = Ignore Pa_IsFormatSupported() errors, "
+    "+2 = Don't even call Pa_IsFormatSupported().\n";
 
     static char seeAlsoString[] = "Open ";
 
-    int mutexenable, mylockToCore1, mysuspend;
+    int mutexenable, mylockToCore1, mysuspend, myworkaroundsMask;
     double myyieldInterval;
 
     // Setup online help:
     PsychPushHelp(useString, synopsisString, seeAlsoString);
     if(PsychIsGiveHelp()) {PsychGiveHelp(); return(PsychError_none); };
 
-    PsychErrorExit(PsychCapNumInputArgs(4));     // The maximum number of inputs
+    PsychErrorExit(PsychCapNumInputArgs(5));     // The maximum number of inputs
     PsychErrorExit(PsychRequireNumInputArgs(0)); // The required number of inputs
-    PsychErrorExit(PsychCapNumOutputArgs(4));    // The maximum number of outputs
+    PsychErrorExit(PsychCapNumOutputArgs(5));    // The maximum number of outputs
 
     // Make sure no settings are changed while an audio device is open:
-    if ((PsychGetNumInputArgs() > 0) && (audiodevicecount > 0)) PsychErrorExitMsg(PsychError_user, "Tried to change low-level engine parameter while at least one audio device is open! Forbidden!");
+    if ((PsychGetNumInputArgs() > 0) && (audiodevicecount > 0))
+        PsychErrorExitMsg(PsychError_user, "Tried to change low-level engine parameter while at least one audio device is open! Forbidden!");
 
     // Return current/old audioserver_suspend:
     PsychCopyOutDoubleArg(4, kPsychArgOptional, (double) ((pulseaudio_autosuspend) ? 1 : 0));
@@ -5838,15 +5914,14 @@ PsychError PSYCHPORTAUDIOEngineTunables(void)
         if (verbosity > 3) printf("PsychPortAudio: INFO: Automatic suspending of desktop audio servers %s.\n", (pulseaudio_autosuspend) ? "enabled" : "disabled");
     }
 
-    // Make sure PortAudio is online: Must be done after setup of audioserver_suspend!
-    PsychPortAudioInitialize();
-
     // Return old yieldInterval:
     PsychCopyOutDoubleArg(1, kPsychArgOptional, yieldInterval);
 
     // Get optional new yieldInterval:
     if (PsychCopyInDoubleArg(1, kPsychArgOptional, &myyieldInterval)) {
-        if (myyieldInterval < 0 || myyieldInterval > 0.1) PsychErrorExitMsg(PsychError_user, "Invalid setting for 'yieldInterval' provided. Valid are between 0.0 and 0.1 seconds.");
+        if (myyieldInterval < 0 || myyieldInterval > 0.1)
+            PsychErrorExitMsg(PsychError_user, "Invalid setting for 'yieldInterval' provided. Valid are between 0.0 and 0.1 seconds.");
+
         yieldInterval = myyieldInterval;
         if (verbosity > 3) printf("PsychPortAudio: INFO: Engine yieldInterval changed to %lf seconds.\n", yieldInterval);
     }
@@ -5869,6 +5944,19 @@ PsychError PSYCHPORTAUDIOEngineTunables(void)
         if (mylockToCore1 < 0 || mylockToCore1 > 1) PsychErrorExitMsg(PsychError_user, "Invalid setting for 'lockToCore1' provided. Valid are 0 and 1.");
         lockToCore1 = (mylockToCore1 > 0) ? TRUE : FALSE;
         if (verbosity > 3) printf("PsychPortAudio: INFO: Locking of all engine threads to cpu core 1 %s.\n", (lockToCore1) ? "enabled" : "disabled");
+    }
+
+    // Return current/old workarounds mask:
+    PsychCopyOutDoubleArg(5, kPsychArgOptional, workaroundsMask);
+
+    // Get optional workaroundsMask:
+    if (PsychCopyInIntegerArg(5, kPsychArgOptional, &myworkaroundsMask)) {
+        if (myworkaroundsMask < 0)
+            PsychErrorExitMsg(PsychError_user, "Invalid setting for 'workarounds' provided. Valid are values >= 0.");
+
+        workaroundsMask = myworkaroundsMask;
+
+        if (verbosity > 3) printf("PsychPortAudio: INFO: Setting workaroundsMask to %i.\n", workaroundsMask);
     }
 
     return(PsychError_none);

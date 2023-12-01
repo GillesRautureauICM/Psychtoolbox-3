@@ -42,6 +42,7 @@ double      PsychOSGetVBLTimeAndCount(PsychWindowRecordType *windowRecord, psych
 psych_bool  PsychOSSetupFrameLock(PsychWindowRecordType *masterWindow, PsychWindowRecordType *slaveWindow);
 psych_int64 PsychOSScheduleFlipWindowBuffers(PsychWindowRecordType *windowRecord, double tWhen, psych_int64 targetMSC, psych_int64 divisor, psych_int64 remainder, unsigned int specialFlags);
 psych_int64 PsychOSGetSwapCompletionTimestamp(PsychWindowRecordType *windowRecord, psych_int64 targetSBC, double* tSwap);
+psych_bool  PsychOSEnablePresentEventReception(PsychWindowRecordType *windowRecord, int forCompositor, psych_bool enable);
 void        PsychOSProcessEvents(PsychWindowRecordType *windowRecord, int flags);
 double      PsychOSAdjustForCompositorDelay(PsychWindowRecordType *windowRecord, double targetTime, psych_bool onlyForCalibration);
 psych_bool  PsychVRRActive(PsychWindowRecordType *windowRecord);
@@ -54,7 +55,9 @@ int         PsychGetXScreenIdForScreen(int screenNumber);
 void        PsychOSInitializeOpenML(PsychWindowRecordType *windowRecord);
 
 // Special logging function, Linux/X11 only:
-psych_bool  PsychOSSwapCompletionLogging(PsychWindowRecordType *windowRecord, int cmd, int aux1);
+psych_bool PsychOSSwapCompletionLogging(PsychWindowRecordType *windowRecord, int cmd, int aux1);
+psych_bool PsychOSEnableX11ClientCompositorSync(PsychWindowRecordType *windowRecord);
+psych_bool PsychOSX11ClientCompositorSyncEnabled(PsychWindowRecordType *windowRecord);
 
 // Linux/X11 only: Ensure that video outputs are properly configured to reproduce at least min_bpc framebuffer output precision:
 psych_bool PsychOSEnsureMinimumOutputPrecision(int screenNumber, int min_bpc);

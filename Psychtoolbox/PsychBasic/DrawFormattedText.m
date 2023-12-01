@@ -17,9 +17,11 @@ function [nx, ny, textbounds, wordbounds] = DrawFormattedText(win, tstring, sx, 
 %
 % 'sx' defines the left border of the text: If it is left out, text
 % starts at x-position zero, otherwise it starts at the specified position
-% 'sx'. If sx=='center', then each line of text is horizontally centered in
-% the window. If sx=='right', then each line of text is right justified to
-% the right border of the target window, or of 'winRect', if provided.
+% 'sx' in the window. If sx=='left', then each line of text is left justified
+% to the left border of the target window, or of 'winRect', if provided.
+% If sx=='center', then each line of text is horizontally centered in
+% the window or 'winRect'. If sx=='right', then each line of text is right
+% justified to the right border of the target window, or of 'winRect'.
 % The options sx == 'wrapat' and sx == 'justifytomax' try to align the start
 % of each text line to the left border and the end of each text line to either
 % the specified 'wrapat' number of columns, or to the width of the widest line
@@ -66,7 +68,7 @@ function [nx, ny, textbounds, wordbounds] = DrawFormattedText(win, tstring, sx, 
 % read right to left
 %
 % The optional argument 'winRect' allows to specify a [left top right bottom]
-% rectange, in which the text should be centered/placed etc. By default,
+% rectangle, in which the text should be centered/placed etc. By default,
 % the rectangle of the whole 'win'dow is used.
 %
 % The function employs clipping by default. Text lines that are detected as
@@ -180,7 +182,7 @@ if IsOctave
     % take care of this in the code, but necessary casts() also trigger
     % an out-of-range warning in Octave, which we can't selectively disable,
     % as it lacks a unique warning id (duh!). Therefore disable all warnings
-    % on Octave and reenable to previous setting whenever the we exit, and
+    % on Octave and re-enable to previous setting whenever the we exit, and
     % therefore the canary variable reenablewarn goes out of scope:
     warningstate = warning('query');
     warning('off');
@@ -198,27 +200,23 @@ if nargin < 3 || isempty(sx)
 end
 
 xcenter = 0;
+ljustify = 0;
 rjustify = 0;
 bjustify = 0;
 if ischar(sx)
-    if strcmpi(sx, 'center')
-        xcenter = 1;
-    end
-
-    if strcmpi(sx, 'right')
-        rjustify = 1;
-    end
-
-    if strcmpi(sx, 'wrapat')
-        bjustify = 1;
-    end
-
-    if strcmpi(sx, 'justifytomax')
-        bjustify = 2;
-    end
-
-    if strcmpi(sx, 'centerblock')
-        bjustify = 3;
+    switch lower(sx)
+        case 'center'
+            xcenter = 1;
+        case 'left'
+            ljustify = 1;
+        case 'right'
+            rjustify = 1;
+        case 'wrapat'
+            bjustify = 1;
+        case 'justifytomax'
+            bjustify = 2;
+        case 'centerblock'
+            bjustify = 3;
     end
 
     % Set sx to neutral setting:
@@ -272,9 +270,9 @@ else
 end
 
 while ~isempty(newlinepos)
-    % Replace first occurence of '\n' by ASCII or double code 10 aka 'repchar':
+    % Replace first occurrence of '\n' by ASCII or double code 10 aka 'repchar':
     tstring = [ tstring(1:min(newlinepos)-1) repchar tstring(min(newlinepos)+2:end)];
-    % Search next occurence of linefeed (if any) in new expanded string:
+    % Search next occurrence of linefeed (if any) in new expanded string:
     newlinepos = strfind(char(tstring), '\n');
 end
 
@@ -345,7 +343,7 @@ if ~yPosIsBaseline
     baselineHeight = 0;
 end
 
-% Keep current text color if noone provided:
+% Keep current text color if no one provided:
 if nargin < 5 || isempty(color)
     color = [];
 end
@@ -366,7 +364,7 @@ end
 disableClip = (ptb_drawformattedtext_disableClipping ~= -1) && ...
               ((ptb_drawformattedtext_disableClipping > 0) || (nargout >= 3));
 
-if bjustify
+if bjustify || ljustify
     sx = winRect(RectLeft);
 end
 

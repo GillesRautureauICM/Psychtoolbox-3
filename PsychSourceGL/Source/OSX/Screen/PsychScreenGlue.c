@@ -245,7 +245,7 @@ psych_bool PsychOSFixupFramebufferFormatForTiming(int screenNumber, psych_bool e
     display_mode_t *optimal_mode = NULL;
     int i, count = 0;
     int current_mode_num, target_mode_num;
-    int targetDepthCode;
+    int targetDepthCode, targetWidth, targetHeight;
     int verbosity = PsychPrefStateGet_Verbosity();
 
     // Map targetBpc to OSX framebuffer scanout depth code:
@@ -297,9 +297,26 @@ psych_bool PsychOSFixupFramebufferFormatForTiming(int screenNumber, psych_bool e
         if ((modes[i].flags & (1 << 25)) && (modes[i].scale == 1) && (modes[i].depth == targetDepthCode) &&
             (modes[i].freq == current_mode->freq)) {
             optimal_mode = &modes[i];
+
             if (verbosity > 3)
-                printf("PTB-DEBUG: Optimal mode for timing on screenId %i at %i bpc: %dx%d@%.0f@d=%d@%iHz\n", screenNumber, targetBpc,
+                printf("PTB-DEBUG: Optimal mode from auto-detect for timing on screenId %i at %i bpc: %dx%d@%.0f@d=%d@%iHz\n", screenNumber, targetBpc,
                    optimal_mode->width, optimal_mode->height, optimal_mode->scale, optimal_mode->depth, (int) optimal_mode->freq);
+        }
+    }
+
+    // If auto-detection of mode can't find a suitable optimal_mode due to even more macOS brokeness, e.g., on macOS 11 + iMac,
+    // then try if we have the specific display model in our internal hard-coded LUT, and if so, use the native resolution from
+    // the LUT as target resolution of the mode and retry mode matching:
+    if (!optimal_mode && PsychOSGetPanelOverrideSize(screenNumber, &targetWidth, &targetHeight)) {
+        for (i = 0; i < count; i++) {
+            if ((modes[i].scale == 1) && (modes[i].depth == targetDepthCode) && (modes[i].freq == current_mode->freq) &&
+                (modes[i].width == targetWidth) && (modes[i].height == targetHeight)) {
+                optimal_mode = &modes[i];
+
+                if (verbosity > 3)
+                    printf("PTB-DEBUG: Optimal mode from internal LUT for timing on screenId %i at %i bpc: %dx%d@%.0f@d=%d@%iHz\n", screenNumber, targetBpc,
+                    optimal_mode->width, optimal_mode->height, optimal_mode->scale, optimal_mode->depth, (int) optimal_mode->freq);
+            }
         }
     }
 
@@ -334,6 +351,16 @@ psych_bool PsychOSFixupFramebufferFormatForTiming(int screenNumber, psych_bool e
             return(TRUE);
         }
 
+        // Discard auto-selected mode if user script requests this, so fallback of just finding a mode
+        // with proper targetDepthCode triggers, keeping current modes resolution and refresh rate.
+        if (PsychPrefStateGet_ConserveVRAM() & kPsychDontSwitchToOptimalVidMode) {
+            if (verbosity > 2)
+                printf("PTB-INFO:PsychOSFixupFramebufferFormatForTiming: Ignoring optimal mode for screenId %i due to ConserveVRAM 2 user override.\n",
+                       screenNumber);
+
+            optimal_mode = NULL;
+        }
+
         // Need to switch mode to something more suitable:
         if (optimal_mode) {
             // There exists an optimal mode for the display, e.g., the native unscaled resolution
@@ -347,7 +374,7 @@ psych_bool PsychOSFixupFramebufferFormatForTiming(int screenNumber, psych_bool e
         else {
             // Nope. Try to find a mode that matches the current one in all aspects, except its fb format being targetDepthCode:
             if (verbosity > 3) {
-                printf("PTB-DEBUG:PsychOSFixupFramebufferFormatForTiming: screenId %i in unsuitable format %i != %i for %i bpc.\n",
+                printf("PTB-DEBUG:PsychOSFixupFramebufferFormatForTiming: screenId %i in unsuitable mode, or format %i != %i for %i bpc.\n",
                        screenNumber, current_mode->depth, targetDepthCode, targetBpc);
                 printf("PTB-DEBUG:PsychOSFixupFramebufferFormatForTiming: Trying to switch to suitable mode with format %i.\n",
                        targetDepthCode);
@@ -361,6 +388,7 @@ psych_bool PsychOSFixupFramebufferFormatForTiming(int screenNumber, psych_bool e
                     modes[i].freq == current_mode->freq &&
                     modes[i].depth == targetDepthCode && modes[i].scale == 1) {
                     target_mode_num = modes[i].mode;
+
                     if (verbosity > 3)
                         printf("PTB-DEBUG:PsychOSFixupFramebufferFormatForTiming: Switching to suitable mode %ix%i@%iHz.\n",
                                modes[i].width, modes[i].height, (int) modes[i].freq);
@@ -448,10 +476,19 @@ void InitializePsychDisplayGlue(void)
     cursorHidden = FALSE;
 
     #ifdef PTBOCTAVE3MEX
-        // Restrict the latest idiotic hack to Octave on OSX 10.11+
+        // Update April 2021: This hack now hurts instead of helps on at least Octave 6.2
+        // under macOS 10.15.7 Catalina final. Apparently the bug was fixed sometime after
+        // OSX 10.11, or rendered inert due to changes in Octave sometimes after 2016.
+        //
+        // For now we restrict the hack to macOS 10.11 - 10.13.
+        //
+        // As far as i can see, Octave 6.2 binaries are only provided by HomeBrew, Appimage
+        // etc. for macOS 10.14 and later anyway, and building from source will probably never
+        // happen by myself or other users, given the > 12 hour long build times, and officially
+        // we only support 10.15 Catalina anyway, so i don't care about older systems anymore.
         int major, minor, patchlevel;
         PsychCocoaGetOSXVersion(&major, &minor, &patchlevel);
-        if ((major > 10) || (minor >= 11)) {
+        if ((major == 10) && (minor >= 11) && (minor < 14)) {
             // Another tribute to the most idiotic OS in existence: Redirect the stderr
             // stream, so OSX 10.11.0 El Capitans broken logger can't flood us with
             // pointless warning messages anymore. These unsolicited and unexpected
@@ -461,7 +498,8 @@ void InitializePsychDisplayGlue(void)
             // larger problems and side effects somewhere else (haha, hope against hope,
             // this would be the first time a dirty hack wouldn't bite us when dealing with
             // Apples crappy products).
-            if (PsychPrefStateGet_Verbosity() > 3) printf("PTB-WARNING: Redirecting stderr to work around broken OSX 10.11. This may have unpleasant side-effects.\n");
+            //
+            if (PsychPrefStateGet_Verbosity() > 3) printf("PTB-WARNING: Redirecting stderr to work around broken OSX 10.11+. This may have unpleasant side-effects.\n");
             freopen(((getenv("PSYCH_REDIRECT_STDERR_PATH")) ? getenv("PSYCH_REDIRECT_STDERR_PATH") : "/dev/null"), "a", stderr);
         }
     #endif
@@ -678,7 +716,7 @@ void PsychReleaseScreen(int screenNumber)
     return;
 }
 
-psych_bool PsychIsScreenCaptured(screenNumber)
+psych_bool PsychIsScreenCaptured(int screenNumber)
 {
     return(PsychCheckScreenSettingsLock(screenNumber));
 }
@@ -1072,6 +1110,8 @@ struct macModel {
     int  panelHeight;
     int  panelWidthMM;
 } macModels[] = {
+    { "iMac20,1", 5120, 2880, 0 },
+    { "iMac20,2", 5120, 2880, 0 },
     { "iMacPro1,1", 5120, 2880, 0 },
     { "iMac15,1", 5120, 2880, 0 },
     { "iMac17,1", 5120, 2880, 0 },
@@ -1610,19 +1650,28 @@ void InitPsychtoolboxKernelDriverInterface(void)
             // Query and assign GPU info:
             PsychOSKDGetGPUInfo(connect, numKernelDrivers);
 
-            // Skip Intel gpu's, unless the PSYCH_ALLOW_DANGEROUS env variable is set:
-            // Intel IGP's have a design defect which can cause machine hard lockup if multiple
-            // regs are accessed simultaneously! As we can't serialize our MMIO reads with the
-            // kms-driver, using our MMIO code on Intel is unsafe. Horrible crashes are reported
-            // against Haswell on the freedesktop bug tracker for this issue.
+            // Skip Intel gpu's if the PSYCH_DISALLOW_DANGEROUS env variable is set:
+            // Some Intel IGP's are rumoured to have a design quirk which can cause machine hard lockup if multiple
+            // regs are accessed simultaneously! As we can't serialize our MMIO reads with the operating systems
+            // kernel-driver, using our MMIO code on Intel was considered unsafe. Horrible crashes were reported
+            // against Haswell on the freedesktop bug tracker for this issue. However, in practice no such issue was
+            // ever encountered by myself during any testing, nor was such an issue ever reported by our users, so the
+            // practical risk of this happening on macOS in the context of PTB seems to be very low - or even non-existent?
+            // Given that no crash was observed from Gen-5 Ironlake, through Gen-7/7.5 IvyBridge/Haswell, through to Gen 9.5
+            // Kabylake, lets assume we are rather safe here. Apple is not expected to release any new Macs with Intel onboard
+            // iGPU going forward, given their switch to Apple Silicon, so the current status wrt. Intel iGPU will probably stay
+            // static. Anyhow, lets take a little risk with the release of PTB 3.0.18 and enable the PsychtoolboxKernelDriver on
+            // Intel iGPU by default if the driver was installed by the user. Users can still block the driver by setting a new
+            // environment variable PSYCH_DISALLOW_DANGEROUS, and we will revert this approach if we should get any bug reports
+            // pointing to problems. Enabling the driver may give some more insight into the state of macOS on Intel iGPU's...
             //
             // Also skip AMD gpu's older than DCE 1 aka AVIVO, or unknown AMD models, as our logic doesn't support them.
             // Also for now skip AMD gpu's of DCE12 type, as we can't handle them yet.
-            if (((fDeviceType[numKernelDrivers] == kPsychIntelIGP) && !getenv("PSYCH_ALLOW_DANGEROUS")) ||
+            if (((fDeviceType[numKernelDrivers] == kPsychIntelIGP) && getenv("PSYCH_DISALLOW_DANGEROUS")) ||
                 ((fDeviceType[numKernelDrivers] == kPsychRadeon) && (fCardType[numKernelDrivers] < 30 || fCardType[numKernelDrivers] >= 120) && !isDCE1(fPCIDeviceId[numKernelDrivers]))) {
                 if (PsychPrefStateGet_Verbosity() > 2) {
                     if (fDeviceType[numKernelDrivers] == kPsychIntelIGP) {
-                        printf("PTB-INFO: Disconnecting from kernel driver instance #%i for detected Intel GPU for safety reasons. setenv('PSYCH_ALLOW_DANGEROUS', '1') to override.\n", numKernelDrivers);
+                        printf("PTB-INFO: Disconnecting from kernel driver instance #%i for detected Intel GPU for safety reasons. Remove setenv('PSYCH_DISALLOW_DANGEROUS', '1') to override.\n", numKernelDrivers);
                     } else {
                         printf("PTB-INFO: Disconnecting from kernel driver instance #%i because detected AMD GPU is not supported. [PCI Id: 0x%x]\n", numKernelDrivers, fPCIDeviceId[numKernelDrivers]);
                     }

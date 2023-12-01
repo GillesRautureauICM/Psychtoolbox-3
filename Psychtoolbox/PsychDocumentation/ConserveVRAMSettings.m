@@ -3,7 +3,7 @@
 % The command Screen('Preference', 'ConserveVRAM', mode); can be used to
 % enable a couple of special work-arounds inside Screen to work around
 % broken operating systems, graphics drivers or graphics hardware, or to
-% work around ressource limitations of graphics hardware.
+% work around resource limitations of graphics hardware.
 %
 % You define the requested workaround by setting the parameter 'mode' to a
 % sum of the following values:
@@ -22,11 +22,22 @@
 % that only has very small amounts of VRAM, e.g., only 16 MB or 8 MB VRAM.
 %
 %
-% 2 == kPsychDontCacheTextures: A setting of 2 asks Psychtoolbox not to
-% cache used textures in the graphics hardware local VRAM memory. This will
-% save some VRAM memory at the expense of lower drawing performance. Only
-% useful on gfx-hardware with low amounts of VRAM and only works on
-% MacOS/X. The flag is silently ignored on Windows and Linux.
+% 2 == kPsychDontSwitchToOptimalVidMode: A setting of 2 asks Psychtoolbox
+% to avoid switching the display to a different resolution, as would be
+% normally done on macOS for Intel Macs in fullscreen mode in order to fix
+% various macOS bugs. Instead a mode with proper timing properties but
+% matching video resolution and refresh rate to the currently active mode
+% is chosen if possible. This is usually the wrong thing to do, but for
+% certain special external display configurations it might help, e.g., with
+% external display splitter devices from Matrox.
+%
+% The flag is silently ignored on Windows and Linux, as the visual timing
+% workarounds influenced by this flag are only needed on buggy macOS.
+%
+% Note that this flag value 2 used to have a different meaning in older
+% Psychtoolbox releases, influencing texture memory optimizations. These
+% have been removed as they were both not needed anymore and buggy on
+% recent macOS releases.
 %
 %
 % 4 == kPsychOverrideWglChoosePixelformat: This is a workaround for broken
@@ -56,8 +67,8 @@
 % imaging combo work at least when no stencil buffer is needed.
 %
 %
-% 32 == kPsychDontShareContextRessources: Do not share ressources between
-% different onscreen windows. Usually you want PTB to share all ressources
+% 32 == kPsychDontShareContextRessources: Do not share resources between
+% different onscreen windows. Usually you want PTB to share all resources
 % like offscreen windows, textures and GLSL shaders among all open onscreen
 % windows. If that causes trouble for some weird reason, you can prevent
 % automatic sharing with this flag.
@@ -121,7 +132,7 @@
 % Tell PTB to use the opposite texture format of what its auto-detection
 % thinks is optimal. Screen contains code to auto-detect certain type of
 % graphics chips with broken drivers and tries to work-around them by
-% chosing different parameters for fast texture creation in certains
+% choosing different parameters for fast texture creation in certains
 % circumstances. In case those vendors should ever fix their drivers and
 % thereby the built-in workaround becoming invalid, this allows to override
 % PTB's choice. This is mostly to work around broken ATI drivers on
@@ -302,7 +313,7 @@
 % Currently no such bugs exist, so this option is just to future-proof
 % your Psychtoolbox against potential bugs in future operating systems.
 % Bugs were present in Linux versions 3.13 - 3.15 for a short period of
-% time between April and July 2014 which made this workaround neccessary.
+% time between April and July 2014 which made this workaround necessary.
 % However, the workaround is automatically enabled on such Linux versions
 % without the need for this conservevram setting. The relevant Linux bugs
 % have been fixed by mid-July 2014, ie., at the time of this writing, in all

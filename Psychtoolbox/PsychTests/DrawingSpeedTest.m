@@ -1,5 +1,5 @@
-function DrawingSpeedTest(n,primitivetype,mode,gpumeasure)
-% DrawingSpeedTest([n=800][,primitivetype=0][,mode=0][,gpumeasure=0])
+function DrawingSpeedTest(n,maxsize,primitivetype,mode,gpumeasure)
+% DrawingSpeedTest([n=800][,maxsize=80][,primitivetype=0][,mode=0][,gpumeasure=0])
 %
 % Tests batch-drawing performance of some Screen functions. Batch drawing
 % is a way to submit multiple primitives, e.g., Filled Rects, at once. This
@@ -11,12 +11,16 @@ function DrawingSpeedTest(n,primitivetype,mode,gpumeasure)
 % ovals. It also provides a way to test drawing by texture mapping.
 % Dots and Lines are nicely demonstrated by DotDemo and LinesDemo.
 %
-% The optional parameter n allows to specifiy the number of primitives to
+% The optional parameter 'n' allows to specifiy the number of primitives to
 % draw each frame, default is 800. The test loop will draw 1000 identical
 % frames and measure the time needed.
 %
+% 'maxsize' The maximum size of the primitive (width and height of covered
+% screen area) in pixels. Size of each primitive will be selected as a random
+% size between 1 pixel and 'maxsize' pixels.
+%
 % 'primitivetype' type of primitive: 0 = filled rects, 1 = framed rects, 2
-% = filled ovals, 3 = framed ovals.
+% = filled ovals, 3 = framed ovals, 4 = filled arcs.
 %
 % 'mode' type of drawing: 0 = One by one submission (slowest), 1 = batch
 % submission, 2 = texture mapping for drawing, 3 = texture mapping with
@@ -36,15 +40,27 @@ if nargin < 1 || isempty(n)
     n = 800;
 end
 
-if nargin < 2 || isempty(primitivetype)
+if nargin < 2 || isempty(maxsize)
+    maxsize = 80;
+end
+
+if nargin < 3 || isempty(primitivetype)
     primitivetype = 0;
+else
+    if ~ismember(primitivetype, [0, 1, 2, 3, 4])
+        error('Unsupported primitivetype specified. Must be 0 - 4.');
+    end
 end
 
-if nargin < 3 || isempty(mode)
+if nargin < 4 || isempty(mode)
     mode = 0;
+else
+    if ~ismember(mode, [0, 1, 2, 3])
+        error('Unsupported mode specified. Must be 0 - 3.');
+    end
 end
 
-if nargin < 4 || isempty(gpumeasure)
+if nargin < 5 || isempty(gpumeasure)
     gpumeasure = 0;
 end
 
@@ -53,13 +69,13 @@ AssertOpenGL;
 
 % Open window with gray background on secondary display (if any):
 screenid = max(Screen('Screens'));
-[win winrect] = Screen('OpenWindow', screenid, 128, [], [], [], [], 0);
+[win, winrect] = Screen('OpenWindow', screenid, 128, [], [], [], [], 0);
 
 % Setup stim parameters:
 w=RectWidth(winrect);
 h=RectHeight(winrect);
-sizeX=80;
-sizeY=80;
+sizeX=maxsize;
+sizeY=maxsize;
 msize = min(w,h);
 
 % In mode 2 or 3, we draw a prototype stimulus into an offscreen window,
@@ -76,14 +92,16 @@ if mode == 2 || mode == 3
     % Draw prototype primitive which covers the full window and has a color
     % and alpha value of 255 ie. white and fully opaque:
     switch primitivetype
-        case 0,
+        case 0
             Screen('FillRect', template, 255);
-        case 1,
+        case 1
             Screen('FrameRect', template, 255, [0 0 msize msize], 50);
-        case 2,
+        case 2
             Screen('FillOval', template, 255);
-        case 3,
+        case 3
             Screen('FrameOval', template, 255);
+        case 4
+            Screen('FillArc', template, 255, [], 45, 180);
     end
 end
 
@@ -92,7 +110,7 @@ end
 for j = 1:n
     posx = rand * w;
     posy = rand * h;
-    colors(j, 1:3) = [ rand * 255, rand * 255, rand * 255];
+    colors(j, 1:3) = [ rand * 255, rand * 255, rand * 255]; %#ok<*AGROW> 
     myrect(j, 1:4) = floor([ posx, posy, posx + rand * sizeX, posy + rand * sizeY]);
     sizes(j) = floor(rand * 10)+1;
 end
@@ -118,7 +136,7 @@ for i=1:1000
     % Batch draw:
     if mode < 2
         switch primitivetype
-            case 0,
+            case 0
                 if mode == 1
                     % Batch drawing version of FillRect - submit all
                     % primitives at once:
@@ -131,7 +149,7 @@ for i=1:1000
                         Screen('FillRect', win, colors(:,j)', myrect(:,j)');
                     end
                 end
-            case 1,
+            case 1
                 if mode == 1
                     Screen('FrameRect', win, colors, myrect, sizes);
                 end
@@ -142,7 +160,7 @@ for i=1:1000
                     end
                 end
 
-            case 2,
+            case 2
                 if mode == 1
                     Screen('FillOval', win, colors, myrect);
                 end
@@ -152,7 +170,7 @@ for i=1:1000
                         Screen('FillOval', win, colors(:,j)', myrect(:,j)');
                     end
                 end
-            case 3,
+            case 3
                 if mode == 1
                     Screen('FrameOval', win, colors, myrect, sizes);
                 end
@@ -163,6 +181,13 @@ for i=1:1000
                     end
                 end
 
+            case 4
+                % No batch drawing for FillArc:
+                if mode == 0 || mode == 1
+                    for j=1:n
+                        Screen('FillArc', win, colors(:,j)', myrect(:,j)', 33, 180);
+                    end
+                end
         end
     else
         % mode > 2: Use DrawTexture to draw template primitive:
@@ -170,7 +195,7 @@ for i=1:1000
             for j=1:n
                 % DrawTexture in a loop:
                 Screen('DrawTexture', win, template, [], myrect(:,j)', [], 0, [], colors(:,j)');
-            end;
+            end
         else
             % Batch drawing version DrawTextures:
             Screen('DrawTextures', win, template, [], myrect, 0, 0, 0, colors);

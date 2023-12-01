@@ -120,7 +120,7 @@ static mwSize mxGetNOnly(const mxArray *arrayPtr);
 static mxArray *mxCreateDoubleMatrix3D(psych_int64 m, psych_int64 n, psych_int64 p);
 
 //declarations for functions exported from code module
-EXP void mexFunction(int nlhs, mxArray *plhs[], int nrhs, CONSTmxArray *prhs[]);
+PTB_EXPORT void mexFunction(int nlhs, mxArray *plhs[], int nrhs, CONSTmxArray *prhs[]);
 
 // firstTime: This flag defines if this is the first invocation of the module
 // since it was (re-)loaded:
@@ -186,7 +186,7 @@ psych_bool PsychUseCMemoryLayoutIfOptimal(psych_bool tryEnableCMemoryLayout)
  *    Main entry point for Matlab and Octave. Serves as a dispatch and handles
  *    first time initialization.
  *
- *    EXP is a macro defined within Psychtoolbox source to be nothing
+ *    PTB_EXPORT is a macro defined within Psychtoolbox source to be nothing
  *    except on win where it is the declaration which tells the linker to
  *    make the function visible from outside the DLL.
  *
@@ -208,7 +208,7 @@ psych_bool PsychUseCMemoryLayoutIfOptimal(psych_bool tryEnableCMemoryLayout)
  *        Modules should now register in subfunction mode to support the build-in 'version' command.
  *
  */
-EXP void mexFunction(int nlhs, mxArray *plhs[], int nrhs, CONSTmxArray *prhs[])
+PTB_EXPORT void mexFunction(int nlhs, mxArray *plhs[], int nrhs, CONSTmxArray *prhs[])
 {
     psych_bool          isArgThere[2], isArgEmptyMat[2], isArgText[2], isArgFunction[2];
     PsychFunctionPtr    fArg[2], baseFunction;
@@ -1877,11 +1877,15 @@ const char* PsychRuntimeGetPsychtoolboxRoot(psych_bool getConfigDir)
 
 /* PsychCopyInPointerArg() - Copy in a void* memory pointer which is
  * encoded as a 32 bit or 64 bit unsigned integer, depending if this
- * is a 32 bit or 64 bit build of Psychtoolbox.
+ * is a 32 bit or 64 bit build of Psychtoolbox. This also accepts uint64
+ * input on 32-Bit machines and uint32 input on 64-Bit machines, casting
+ * accordingly, or throwing a range error if trying to stuff true > 32 Bit
+ * input numbers into a 32-Bit pointer on a 32-Bit architecture.
  */
 psych_bool PsychCopyInPointerArg(int position, PsychArgRequirementType isRequired, void **ptr)
 {
     const mxArray     *mxPtr;
+    psych_uint64      tmp64;
     PsychError        matchError;
     psych_bool        acceptArg;
     psych_bool        is64Bit;
@@ -1890,15 +1894,25 @@ psych_bool PsychCopyInPointerArg(int position, PsychArgRequirementType isRequire
     is64Bit = sizeof(size_t) > 4;
 
     PsychSetReceivedArgDescriptor(position, FALSE, PsychArgIn);
-    PsychSetSpecifiedArgDescriptor(position, PsychArgIn, ((is64Bit) ? PsychArgType_uint64 : PsychArgType_uint32), isRequired, 1,1,1,1,1,1);
+    PsychSetSpecifiedArgDescriptor(position, PsychArgIn, PsychArgType_uint64 | PsychArgType_uint32, isRequired, 1,1,1,1,1,1);
     matchError=PsychMatchDescriptors();
 
     acceptArg=PsychAcceptInputArgumentDecider(isRequired, matchError);
     if (acceptArg) {
         mxPtr = PsychGetInArgMxPtr(position);
 
-        if (is64Bit) {
-            *ptr = (void*) (size_t) (((psych_uint64*) mxGetData(mxPtr))[0]);
+        if (PsychGetTypeFromMxPtr(mxPtr) == PsychArgType_uint64) {
+            tmp64 = ((psych_uint64*) mxGetData(mxPtr))[0];
+
+            // Range check if uint64 fits into a 32 bit pointer on this 32-Bit build?
+            // Should only happen on 32-Bit builds if routine is (ab)used on something
+            // else than a memory pointer for the machine architecture:
+            if (!is64Bit && (tmp64 > 0xffffffff)) {
+                printf("PTB-ERROR:PsychCopyInPointerArg(): %i th uint64 input argument does not fit into 32-Bit pointer!\n", position);
+                PsychErrorExitMsg(PsychError_user, "Out of range uint64 value passed for conversion into 32-Bit pointer.");
+            }
+
+            *ptr = (void*) (size_t) tmp64;
         } else {
             *ptr = (void*) (size_t) (((psych_uint32*) mxGetData(mxPtr))[0]);
         }

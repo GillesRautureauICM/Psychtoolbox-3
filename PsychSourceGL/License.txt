@@ -50,14 +50,15 @@
 % open-source license, with the following copyright:
 %
 % Copyright (c) The individual Psychtoolbox core developers:
-%           (c) 1996-2018, David Brainard <brainard@psych.upenn.edu>
-%           (c) 1996-2007, Denis Pelli    <denis.pelli@nyu.edu>
-%                          Allen Ingling  <allen.ingling@nyu.edu>
-%           (c) 2005-2018, Mario Kleiner  <mario.kleiner.de@gmail.com>
+%           (c) 1996-2022, David Brainard <brainard@psych.upenn.edu>
+%           (c) 1996-2022, Denis Pelli    <denis.pelli@nyu.edu>
+%           (c) 1996-2007, Allen Ingling  <allen.ingling@nyu.edu>
+%           (c) 2005-2023, Mario Kleiner  <mario.kleiner.de@gmail.com>
 %
 %           (c) Individual major contributors:
 %           (c) 2006       Richard F. Murray <rfm@yorku.ca>
-%           (c) 2008-2018  Diederick C. Niehorster <dcnieho@gmail.com>
+%           (c) 2008-2022  Diederick C. Niehorster <dcnieho@gmail.com>
+%           (c) 2013-2022  Ian Andolina
 %           (c) 2008-2011  Tobias Wolf <towolf@tuebingen.mpg.de>
 %
 % MIT license:
@@ -95,15 +96,6 @@
 % The Windows DLL and macOS static library are compiled from the open-source MIT
 % licensed PortAudio library from http://portaudio.com - The specific license text is
 % included below in the licenses section.
-%
-% Older versions of Psychtoolbox (v3.0.14 and earlier) used a modified version
-% of PortAudio and DLL's, static and dynamic libraries built from it. For documentation
-% purposes and until further notice, the source code of this MIT licensed library and of
-% all modifications we made can be found in a Psychtoolbox C-Sourcecode download in
-% the subfolder PsychSourceGL/Cohorts/PortAudio/. Building from this source code would
-% yield the old libraries for older < v3.0.15 Psychtoolbox versions. We may delete this
-% source code soon, as it mostly does not serve any use anymore in Psychtoolbox 3.0.15
-% and later.
 %
 %
 % Psychtoolbox/PsychContributed: See individual licenses and output of
@@ -170,8 +162,8 @@
 % be found in the Psychtoolbox/PsychHardware/PsychVRToolbox/ subfolder of Psychtoolbox
 % under the filename “LICENSE_OculusSDK1.txt”.
 %
-% The PsychOculusVR() and PsychOculusVR1() high-level drivers use the function
-% qGetR(). The qGetR.m file for converting a rotation/orientation Quaternion into a
+% The different VR high-level drivers indirectly use the function qGetR().
+% The qGetR.m file for converting a rotation/orientation Quaternion into a
 % 3x3 RHS rotation matrix is a modified version of qGetR from the "quaternion"
 % package of  Przemyslaw Baranski downloaded from Mathworks File Exchange at URL:
 %
@@ -184,6 +176,31 @@
 % The PsychOpenHMDVRCore mex driver for VR HMD's, which is licensed under MIT license,
 % uses OpenHMD for control of the VR devices: https://github.com/OpenHMD/OpenHMD
 % OpenHMD is licensed under the Boost 1.0 software license, included below.
+%
+% Our MIT licensed PsychOpenXRCore mex driver builds against the Khronos OpenXR SDK
+% public headers, and links (dynamically on Linux, statically on Windows) against the
+% OpenXR open-source dynamic loader, to implement the interface to a system-installed
+% OpenXR runtime. See https://www.khronos.org/openxr for information about OpenXR.
+% These components are dual-licensed by Khronos under Apache 2.0 and MIT license, copies
+% of which can be found below: SPDX license identifier "Apache-2.0 OR MIT"
+% You can find the source code for the SDK and loader under:
+% https://github.com/KhronosGroup/OpenXR-SDK
+%
+% For some experimental Monado specific timestamping implementation, the driver currently
+% also contains a statically included copy of the nanopb protobuffer parsing library
+% (URL: https://jpa.kapsi.fi/nanopb) which is licensed under the zLib license, and statically
+% included copies of some files from the FOSS Monado OpenXR runtime from https://monado.freedesktop.org,
+% which are licensed under the Boost Software License BSL-1.0 - SPDX-License-Identifier: BSL-1.0.
+% These statically included files can be found in the nanopb subfolder of the PsychOpenXRCore
+% source folder, with detailed copyright and license information included.
+%
+% Our Virtual Reality (VR) drivers for OpenHMD and OpenXR supported HTC VR headsets
+% with eye gaze tracking hardware also support more advanced eye gaze tracking by
+% use of our SRAnipalMex mex file for 64-Bit Windows 10 and later. This is only
+% supported on MS-Windows. The mex file uses the HTC SRAnipal SDK for interfacing
+% with the HTC eye trackers SRAnipal runtime. The license text for the SRAnipal SDK
+% can be found below in the section of individual licenses under the subsection
+% "The HTC SRAnipal SDK license".
 %
 % Support for NVidia NVision stereo emitter/stereo goggles under Linux is
 % implemented by use of libnvstusb from http://sourceforge.net/projects/libnvstusb/
@@ -298,6 +315,12 @@
 % All sound files in PsychDemos/Soundfiles/ - LGPL license. See file
 %                                             COPYING in that folder for details.
 %
+% The image of the cute, confused looking frog in our Welcome splash screen is
+% from pixabay, which provides this artwork under the "Pixabay license", ie.
+% free for commerical use, no attribution necessary, but appreciated. Thanks! 
+% https://pixabay.com/vectors/frog-green-animal-amphibian-48234/ 
+% "Simplified Pixabay License" at https://pixabay.com/service/license/ attached
+% below.
 %
 %
 % APPENDIX: The different licenses in detail:
@@ -1674,3 +1697,103 @@
 %
 % =========================================================================
 %
+% Simplified Pixabay License:
+%
+% License for Content – Pixabay License
+%
+% Content on Pixabay is made available to you on the following terms ("Pixabay License").
+% Under the Pixabay License you are granted an irrevocable, worldwide, non-exclusive and
+% royalty free right to use, download, copy, modify or adapt the Content for commercial
+% or non-commercial purposes. Attribution of the photographer, videographer, musician or
+% Pixabay is not required but is always appreciated.
+%
+% The Pixabay License does not allow:
+%
+% Sale or distribution of Content as digital Content or as digital wallpapers 
+% (such as on stock media websites);
+%
+% Sale or distribution of Content e.g. as posters, digital prints, music files or
+% physical products, without adding any additional elements or otherwise adding value.
+%
+% Depiction of identifiable persons in an offensive, pornographic, obscene, 
+% immoral, defamatory or libelous way; or
+%
+% Any suggestion that there is an endorsement of products and services by 
+% depicted persons, brands, vocalists and organisations, unless permission was 
+% granted.
+%
+% Please be aware that while all Content on Pixabay is free to use for commercial 
+% and non-commercial purposes, items in the Content, such as identifiable people, 
+% logos, brands, audio samples etc. may be subject to additional copyrights, 
+% property rights, privacy rights, trademarks etc. and may require the consent of 
+% a third party or the license of these rights - particularly for commercial 
+% applications. Pixabay does not represent or warrant that such consents or 
+% licenses have been obtained, and expressly disclaims any liability in this 
+% respect.
+%
+% End of Simplified Pixabay license text.
+%
+% =========================================================================
+%
+% The zLib License:
+%
+% This software is provided 'as-is', without any express or
+% implied warranty. In no event will the authors be held liable
+% for any damages arising from the use of this software.
+%
+% Permission is granted to anyone to use this software for any
+% purpose, including commercial applications, and to alter it and
+% redistribute it freely, subject to the following restrictions:
+%
+% 1. The origin of this software must not be misrepresented; you
+%    must not claim that you wrote the original software. If you use
+%    this software in a product, an acknowledgment in the product
+%    documentation would be appreciated but is not required.
+%
+% 2. Altered source versions must be plainly marked as such, and
+%    must not be misrepresented as being the original software.
+%
+% 3. This notice may not be removed or altered from any source
+%    distribution.
+%
+% End of the zLib license text.
+%
+% =========================================================================
+%
+% The HTC SRAnipal SDK license:
+%
+%                           License Agreement
+%                     For Vive Super Reality Library
+%
+% Copyright (c) 2017, HTC Corporation
+%
+% All rights reserved. Third party copyrights are property of their respective owners.
+%
+% Redistribution and use in source and binary forms, with or without modification,
+% are permitted provided that the following conditions are met:
+%
+%   * Redistribution's of source code must retain the above copyright notice,
+%     this list of conditions and the following disclaimer.
+%
+%   * Redistribution's in binary form must reproduce the above copyright notice,
+%     this list of conditions and the following disclaimer in the documentation
+%     and/or other materials provided with the distribution.
+%
+%   * The name of the copyright holders may not be used to endorse or promote products
+%     derived from this software without specific prior written permission.
+%
+% This software is provided by the copyright holders and contributors "as is" and
+% any express or implied warranties, including, but not limited to, the implied
+% warranties of merchantability and fitness for a particular purpose are disclaimed.
+% In no event shall the Intel Corporation or contributors be liable for any direct,
+% indirect, incidental, special, exemplary, or consequential damages
+% (including, but not limited to, procurement of substitute goods or services;
+% loss of use, data, or profits; or business interruption) however caused
+% and on any theory of liability, whether in contract, strict liability,
+% or tort (including negligence or otherwise) arising in any way out of
+% the use of this software, even if advised of the possibility of such damage.
+%
+% End of the HTC SRAnipal SDK license text.
+%
+% =========================================================================
+

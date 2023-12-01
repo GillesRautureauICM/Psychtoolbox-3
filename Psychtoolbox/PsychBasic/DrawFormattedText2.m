@@ -135,7 +135,7 @@ function [nx, ny, textbounds, cache, wordbounds] = DrawFormattedText2(varargin)
 % Default value is 1.
 %
 % The optional argument 'winRect' allows to specify a [left top right
-% bottom] rectange, in which the text should be placed etc. By default, the
+% bottom] rectangle, in which the text should be placed etc. By default, the
 % rectangle of the whole 'win'dow is used.
 %
 % 'resetStyle'. If true, we reset the base text style to normal before
@@ -249,6 +249,7 @@ function [nx, ny, textbounds, cache, wordbounds] = DrawFormattedText2(varargin)
 % History:
 % 2015--2017    Written (DCN).
 % 7-May-2017    Add support for 'wordbounds' - per word bounding boxes (MK).
+% 18-Apr-2021   Fix UTF-8 string handling WRT new Octave 6 regexp behavior (MR).
 
 
 global ptb_drawformattedtext2_disableClipping;
@@ -285,7 +286,7 @@ if IsOctave
     % take care of this in the code, but necessary casts() also trigger
     % an out-of-range warning in Octave, which we can't selectively disable,
     % as it lacks a unique warning id (duh!). Therefore disable all warnings
-    % on Octave and reenable to previous setting whenever the we exit, and
+    % on Octave and re-enable to previous setting whenever the we exit, and
     % therefore the canary variable reenablewarn goes out of scope:
     warningstate = warning('query');
     warning('off');
@@ -359,9 +360,9 @@ returnChar = cast(10,class(tstring));
 if char(10) ~= '\n' 
     newlinepos = strfind(char(tstring), '\n');
     while ~isempty(newlinepos)
-        % Replace first occurence of '\n' by ASCII or double code 10 aka 'repchar':
+        % Replace first occurrence of '\n' by ASCII or double code 10 aka 'repchar':
         tstring = [ tstring(1:min(newlinepos)-1) returnChar tstring(min(newlinepos)+2:end)];
-        % Search next occurence of linefeed (if any) in new expanded string:
+        % Search next occurrence of linefeed (if any) in new expanded string:
         newlinepos = strfind(char(tstring), '\n');
     end
 end
@@ -615,7 +616,7 @@ for p=1:numlines
     px(qSubStr) = lc+off-lWidthOff(1,p);    % NB: we've been calculating with pixel/paint positions, go back to text cursor position to have the pixels end up where we want them
     
     if p>1
-        % add baseline skip for current line if not first line, thats the
+        % add baseline skip for current line if not first line, that's the
         % carriage return. See note above about how Word does text layout.
         idx = find(qSubStr,1,'first');
         py(idx:end) = py(idx) + round((.22*lBaseLineSkip(p-1)+.78*lBaseLineSkip(p))*vSpacing);
@@ -652,22 +653,28 @@ end
 %% done processing inputs, do text drawing
 % do draw to texture if wanted
 if qDrawToTexture
-    drawRect = transformBBox(bbox,transform);
+    texBbox = OffsetRect(bbox,-bbox(1),-bbox(2));
+    drawRect = transformBBox(texBbox,transform);
+    extraTransOff = [0 0];
+    if ~isempty(transform)
+        % Extra translate so that drawn text has top-left at (0,0)
+        extraTransOff = -drawRect(1:2);
+    end
     [tex.number,tex.rect] = Screen('OpenOffscreenWindow', win, [0 0 0 0], [0 0 RectWidth(drawRect) RectHeight(drawRect)]);
     ResetTextSetup(tex.number,previous,true);
-    [nx, ny, ~, wordbounds] = DoDraw(tex.number,disableClip,px,py,tex.rect,subStrings,switches,fmts,fmtCombs,ssBaseLineOff,winRect,previous,righttoleft,transform,wordboundsbase);
+    [nx, ny, ~, wordbounds] = DoDraw(tex.number,disableClip,px,py,texBbox,subStrings,switches,fmts,fmtCombs,ssBaseLineOff,winRect,previous,righttoleft,transform,wordboundsbase,extraTransOff);
     nx = nx+bbox(1);
     ny = ny+bbox(2);
     wordbounds(:,1) = wordbounds(:,1)+bbox(1);
     wordbounds(:,2) = wordbounds(:,2)+bbox(2);
     wordbounds(:,3) = wordbounds(:,3)+bbox(1);
     wordbounds(:,4) = wordbounds(:,4)+bbox(2);
-    textbounds = drawRect;
+    textbounds = OffsetRect(drawRect,bbox(1),bbox(2));
 end
 if ~cacheOnly
     % draw to screen
     if qDrawToTexture
-        DoDrawTexture(win,tex.number,drawRect,[]);
+        DoDrawTexture(win,tex.number,textbounds,[]);
     else
         [nx, ny, textbounds, wordbounds] = DoDraw(win,disableClip,px,py,bbox,subStrings,switches,fmts,fmtCombs,ssBaseLineOff,winRect,previous,righttoleft,transform,wordboundsbase);
     end
@@ -689,7 +696,7 @@ if nargout>3
     cache.win = win;
     if cacheMode==1
         cache.tex       = tex;
-        cache.bbox      = drawRect;
+        cache.bbox      = textbounds;
         cache.transform = [];           % no need to reapply transforms as they are already "hardcoded" into the texture. But user can add new ones
         cache.nx        = nx;
         cache.ny        = ny;
@@ -718,7 +725,10 @@ function restorewarningstate(warningstate)
     warning(warningstate);
 end
 
-function [previouswin, IsOpenGLRendering] = DoDrawSetup(win,transform,bbox)
+function [previouswin, IsOpenGLRendering] = DoDrawSetup(win,transform,bbox,extraTransOff)
+if nargin<4
+    extraTransOff = [0 0];
+end
 % Is the OpenGL userspace context for this 'windowPtr' active, as required?
 [previouswin, IsOpenGLRendering] = Screen('GetOpenGLDrawMode');
 
@@ -736,8 +746,8 @@ if ~isempty(transform)
     % use/restoration of default state:
     Screen('glPushMatrix', win);
     
-    % Translate origin to the geometric center of the text:
-    Screen('glTranslate', win, xc, yc);
+    % We need to undo the translation
+    Screen('glTranslate', win, xc+extraTransOff(1), yc+extraTransOff(2));
     
     % apply transforms
     % as OpenGL transform should be specified in reversed order but i
@@ -767,7 +777,7 @@ if ~isempty(transform)
         end
     end
     
-    % We need to undo the translation
+    % Translate origin to the geometric center of the text
     Screen('glTranslate', win, -xc, -yc);
 end
 end
@@ -809,12 +819,15 @@ Screen('DrawTexture',win,texNum,[],texDrawRect);
 DoDrawCleanup(win, previouswin, IsOpenGLRendering, transform);
 end
 
-function [nx, ny, bbox, wordbounds] = DoDraw(win,disableClip,sx,sy,bbox,subStrings,switches,fmts,fmtCombs,ssBaseLineOff,winRect,previous,righttoleft,transform,wordboundsbase)
+function [nx, ny, bbox, wordbounds] = DoDraw(win,disableClip,sx,sy,bbox,subStrings,switches,fmts,fmtCombs,ssBaseLineOff,winRect,previous,righttoleft,transform,wordboundsbase,extraTransOff)
 
 [nx,ny]     = deal(nan);
 wordbounds  = wordboundsbase;
+if nargin<16
+    extraTransOff = [0 0];
+end
 
-[previouswin, IsOpenGLRendering] = DoDrawSetup(win, transform, bbox);
+[previouswin, IsOpenGLRendering] = DoDrawSetup(win, transform, bbox, extraTransOff);
 if ~isempty(transform)
     % transform BBox and wordbounds to reflect transforms applied by
     % DoDrawSetup
@@ -887,6 +900,7 @@ function [tstring,fmtCombs,fmts,switches,previous] = getFormatting(win,tstring,s
 % get string type, store original as octave can't deal with string values outside uint8 range
 tstringOri  = tstring;
 tstring     = char(tstring);
+tstring(tstring>127) = 0;
 
 % get colorrange of window, to interpret colors
 cr = Screen('ColorRange',win);
@@ -954,7 +968,7 @@ if ~isempty(tagis)
     if ~isempty(tagt)
         currStyle = codes.style(1);
         for p=1:length(tagt)
-            % the below code snippet is a comment, decribing what the line
+            % the below code snippet is a comment, describing what the line
             % below does
             % switch formatCodes{p}
             %     case 'i'
@@ -1006,7 +1020,7 @@ if ~isempty(tagis)
                     if any(color=='.') || any(qComma)
                         assert(all(isstrprop(color,'digit')|color=='.'|qComma),'DrawFormattedText2: color tag argument must be specified as comma-separated floating point values, or hexadecimal values')
                     else
-                        assert(any(length(color)==[1 2 6 8]),'DrawFormattedText2: if color tag argument is a hexidecimal value, it should have length 1, 2, 6, or 8')
+                        assert(any(length(color)==[1 2 6 8]),'DrawFormattedText2: if color tag argument is a hexadecimal value, it should have length 1, 2, 6, or 8')
                         assert(all(isstrprop(color,'xdigit')),'DrawFormattedText2: color tag argument must be specified as hexadecimal values, or comma-separated floating point values')
                     end
                     % find new color or add to table
@@ -1163,7 +1177,7 @@ function DoFormatChange(win,switches,fmt)
 % rows in switches / columns in format:
 % 1: style, 2: color, 3: font, 4: size
 
-% font and style: if we cange font, always set style with the same
+% font and style: if we change font, always set style with the same
 % command. Always works and sometimes needed with some exotic fonts
 % (see Screen('TextFont?') )
 if switches(3)

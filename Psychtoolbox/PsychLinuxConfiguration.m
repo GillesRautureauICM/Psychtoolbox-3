@@ -38,12 +38,15 @@ function usedAnswers = PsychLinuxConfiguration(answers, dontshowad)
 % of the 'psychtoolbox' group to allow easy reconfiguration of
 % the X11 display system for running experiment sessions.
 %
+% Additionally it configures the gpu's to allow for display color
+% depths of more than 8 bpc. Furthermore, it configures a potentially
+% installed gamemoded daemon to further optimize cpu and graphics
+% performance for use with Psychtoolbox.
+%
 % The script calls into the shell via "sudo" to achieve this
 % setup task, which itself needs admin privileges to modify
 % system files etc. "sudo" will prompt the user for his admin
-% password to complete the tasks. This does not work on Octave
-% with GUI though. You will need octave --no-gui to execute this
-% script once if you use octave.
+% password to complete the tasks.
 %
 % The script also checks if any special configuration is required
 % to work around Linux specific OpenGL quirks of Matlab R2014b or
@@ -258,7 +261,15 @@ if ~exist('/etc/modprobe.d/amddeepcolor-psychtoolbox.conf', 'file') || ...
   fprintf('These files need to be installed if you want to use high color precision mode\n');
   fprintf('to drive a HDMI or DisplayPort high precision display device with more than\n');
   fprintf('8 bpc color depths, ie. more than 256 levels of red, green and blue color.\n');
-  fprintf('You do not need to install it for pure 8 bpc mode.\n');
+  if IsARM
+    % Some special treatment crammed in here for the latest RPi OS 11 BS:
+    fprintf('\nYou also need this file on the RaspberryPi computer to get non-broken visual\n');
+    fprintf('stimulation timing with RaspberryPi OS 11, so i will install the file for you.\n');
+    answers(6) = 'y';
+  else
+    fprintf('You do not need to install it for pure 8 bpc mode.\n');
+  end
+
   if ismember(answers(6), 'yn')
     answer = answers(6);
   else
@@ -279,6 +290,11 @@ else
     needinstall = 2;
     if (r.datenum > i.datenum)
       needinstall = 3;
+    end
+
+    if IsARM
+      % Force it for the RaspberryPi:
+      answers(6) = 'y';
     end
 
     fprintf('However, they seem to be outdated. I have more recent versions with me.\n');
@@ -719,7 +735,27 @@ fprintf('\n\n\n');
 
 % Matlab version 8.4 (R2014b) or later?
 if ~IsOctave && exist('verLessThan') && ~verLessThan('matlab', '8.4.0') %#ok<EXIST>
-  % Yes: If R2014b detects a Mesa OpenGL renderer as default system OpenGL
+  % Yes.
+
+  % Latest Matlab bundles a totally crippled libvulkan.so.1 Vulkan loader
+  % that overrides the good system installed Vulkan loader and sabotages
+  % our PsychVulkan support. Apparently competent people are hard to hire...
+  % Try to detect this and and rename the file:
+  libvulkan = ([matlabroot '/bin/glnxa64/libvulkan.so.1']);
+  if exist(libvulkan, 'file')
+    cmd = ['sudo mv ' libvulkan ' ' libvulkan '.DISABLED'];
+    fprintf('\nThis Matlab version ships a broken libvulkan.so.1 library. Renaming it to disable it...\n');
+    fprintf('You may have to enter your administrator password to execute the following command:\n%s\n\n', cmd);
+    system(cmd);
+
+    if exist(libvulkan, 'file')
+      warning('Failed to rename Matlabs broken libvulkan.so.1. PsychVulkan will not work!');
+    else
+      fprintf('Success. Vulkan should work now.\n');
+    end
+  end
+
+  % If R2014b detects a Mesa OpenGL renderer as default system OpenGL
   % library, it will blacklist it and switch to its own utterly outdated
   % Mesa X11 software renderer (Version 7.2 !!). This is utterly inadequate
   % for our purpose, therefore lets reconfigure Matlab to force it to use the
@@ -746,6 +782,10 @@ end
 
 % Return the given answers / used config:
 usedAnswers = answers;
+
+% Trigger libdc1394 workarounds if Screen does not work. Postinstall routine would
+% run this, but a NeuroDebian install would not, so call it here to handle ND as well:
+AssertOpenGL;
 
 % Our little ad for our services:
 if ~dontshowad && exist('PsychPaidSupportAndServices', 'file')

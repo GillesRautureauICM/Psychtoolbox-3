@@ -1,26 +1,23 @@
 /*
 
-  	PsychToolbox3/Source/OSX/Base/PsychTimeGlue.h
+    PsychToolbox3/Source/OSX/Base/PsychTimeGlue.h
 
-	AUTHORS:
+    AUTHORS:
 
-  	Allen.Ingling@nyu.edu				awi
-	mario.kleiner at tuebingen.mpg.de	mk
+    Allen.Ingling@nyu.edu           awi
+    mario.kleiner.de@gmail.com      mk
 
-	PLATFORMS: Mac Only
+    PLATFORMS: Mac Only
 
-  	PROJECTS:
+    PROJECTS:
 
-  	1/20/03	awi		Screen on OS X
+    1/20/03     awi     All.
 
-  	HISTORY:
+    HISTORY:
 
-  	1/20/03	awi		Wrote it.
-	1/03/09	mk		Add generic Mutex locking support as service to ptb modules.
+    1/20/03     awi     Wrote it.
+    1/03/09     mk      Add generic Mutex locking support as service to ptb modules.
 
-  	DESCRIPTION:
-
-	TO DO:
 */
 
 //begin include once
@@ -34,30 +31,29 @@
  * Apple brain-damage we now have to define their prototypes ourselves to avoid compiler
  * warnings:
  */
-kern_return_t	thread_policy_set(
-                                  thread_t					thread,
-                                  thread_policy_flavor_t		flavor,
-                                  thread_policy_t				policy_info,
-                                  mach_msg_type_number_t		count);
+kern_return_t   thread_policy_set(
+                                  thread_t                      thread,
+                                  thread_policy_flavor_t        flavor,
+                                  thread_policy_t               policy_info,
+                                  mach_msg_type_number_t        count);
 
-kern_return_t	thread_policy_get(
-                                  thread_t					thread,
-                                  thread_policy_flavor_t		flavor,
-                                  thread_policy_t				policy_info,
-                                  mach_msg_type_number_t		*count,
-                                  boolean_t					*get_default);
+kern_return_t   thread_policy_get(
+                                  thread_t                      thread,
+                                  thread_policy_flavor_t        flavor,
+                                  thread_policy_t               policy_info,
+                                  mach_msg_type_number_t        *count,
+                                  boolean_t                     *get_default);
 
 
-
-void PsychWaitUntilSeconds(double whenSecs);
-void PsychWaitIntervalSeconds(double seconds);
-void PsychYieldIntervalSeconds(double seconds);
+double PsychWaitUntilSeconds(double whenSecs);
+double PsychWaitIntervalSeconds(double seconds);
+double PsychYieldIntervalSeconds(double seconds);
 double PsychGetKernelTimebaseFrequencyHz(void);
 void PsychGetPrecisionTimerTicks(psych_uint64 *ticks);
 void PsychGetPrecisionTimerTicksPerSecond(double *frequency);
 void PsychGetPrecisionTimerTicksMinimumDelta(psych_uint32 *delta);
 void PsychGetPrecisionTimerSeconds(double *secs);
-void PsychGetAdjustedPrecisionTimerSeconds(double *secs);
+double PsychGetAdjustedPrecisionTimerSeconds(double *secs);
 void PsychGetPrecisionTimerAdjustmentFactor(double *factor);
 void PsychSetPrecisionTimerAdjustmentFactor(double *factor);
 void PsychInitTimeGlue(void);
@@ -88,10 +84,25 @@ int PsychTimedWaitCondition(psych_condition* condition, psych_mutex* mutex, doub
 #define PsychIsMSVista() 0
 int PsychIsCurrentThreadEqualToPsychThread(psych_thread threadhandle);
 psych_uint64 PsychAutoLockThreadToCores(psych_uint64* curCpuMask);
-int PsychGetOSXMinorVersion(void);
+int PsychGetOSXMinorVersion(psych_bool* isARM);
 const char* PsychSupportStatus(void);
 double PsychOSMonotonicToRefTime(double monotonicTime);
 double PsychOSRefTimeToMonotonicTime(double refInputTime);
+
+// Execute a block of code { statement1; statement2; ...; statementn; } on the
+// application main thread. Execute directly if current thread is main thread,
+// otherwise use dispatch_sync on the main queue == main threads queue to offload
+// to main thread but wait synchronously for completion.
+//
+// Needed to deal with some dumb macOS restriction of only calling certain functions
+// from the application main thread, often related to GUI processing via Coca/NSWindow etc.
+#define DISPATCH_SYNC_ON_MAIN(ARG) do {                                 \
+    if (pthread_main_np() != 1) {    \
+        dispatch_sync(dispatch_get_main_queue(), ^ARG);                 \
+    } else {                                                            \
+        ARG;                                                            \
+    }                                                                   \
+} while(0)
 
 //end include once
 

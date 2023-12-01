@@ -22,6 +22,8 @@
 
 #include "PsychHIDStandardInterfaces.h"
 #include <errno.h>
+#include <dlfcn.h>
+#include <IOKit/hidsystem/IOHIDLib.h>
 
 #define NUMDEVICEUSAGES 8
 
@@ -45,6 +47,13 @@ static  pRecDevice deviceRecords[PSYCH_HID_MAX_DEVICES];
 static  int defaultKeyboardIndex = 0;
 static  const UCKeyboardLayout *keyboardLayout = NULL;
 static  UInt8 kbdType = 0;
+
+// These are only available on macOS 10.15+, so must be use-time dynamically linked,
+// to keep PsychHID working on pre-Catalina:
+typedef IOHIDAccessType (*IOHIDCheckAccessPROCTYPE)(IOHIDRequestType requestType);
+typedef bool (*IOHIDRequestAccessPROCTYPE)(IOHIDRequestType requestType);
+IOHIDCheckAccessPROCTYPE fpIOHIDCheckAccess = NULL;
+IOHIDRequestAccessPROCTYPE fpIOHIDRequestAccess = NULL;
 
 // Return real deviceIndex (aka KbQueue index) and HID device record pRecDevice
 // for a given PsychHID('Devices') style input deviceIndex. *deviceIndex is an
@@ -157,6 +166,50 @@ void PsychHIDShutdownHIDStandardInterfaces(void)
     PsychDestroyCondition(&KbQueueCondition);
 
     return;
+}
+
+psych_bool PsychHIDWarnAccessDenied(const char* callerName)
+{
+    // Bind IOHIDCheckAccess() if it is available, starting with macOS 10.15:
+    if (fpIOHIDCheckAccess == NULL)
+        fpIOHIDCheckAccess = dlsym(RTLD_DEFAULT, "IOHIDCheckAccess");
+
+    if ((fpIOHIDCheckAccess == NULL) || (fpIOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted))
+        return(FALSE);
+
+    printf("\n\nPsychHID-ERROR: During %s: macOS is preventing access to HID input devices like keyboard, keypad and mouse!\n", (callerName) ? callerName : "PsychHID invocation");
+    printf("PsychHID-ERROR: This is because permission for 'Input Monitoring' is denied to %s, or to Terminal.app, if you started %s from a Terminal.\n",
+           PSYCHTOOLBOX_SCRIPTING_LANGUAGE_NAME, PSYCHTOOLBOX_SCRIPTING_LANGUAGE_NAME);
+    printf("PsychHID-ERROR: Please rectify this manually now:\n");
+    printf("PsychHID-ERROR: \n");
+    printf("PsychHID-ERROR: 1. Quit %s, and also Terminal if it was used to launch %s.\n", PSYCHTOOLBOX_SCRIPTING_LANGUAGE_NAME, PSYCHTOOLBOX_SCRIPTING_LANGUAGE_NAME);
+    printf("PsychHID-ERROR: 2. Open 'System Preferences', then go to the 'Security & Privacy' control panel.\n");
+    printf("PsychHID-ERROR: 3. Select the 'Privacy' tab, and then in the list on the left, the item 'Input Monitoring'.\n");
+    printf("PsychHID-ERROR: 4. Make sure that %s, or similar, or maybe Terminal instead, is listed in the list on the right.\n", PSYCHTOOLBOX_SCRIPTING_LANGUAGE_NAME);
+    printf("PsychHID-ERROR:    E.g., names could be 'Terminal' or 'Octave' something, or 'MATLAB_R2020b.app' or similar for Matlab.\n");
+    printf("PsychHID-ERROR: 5. Make sure that the checkbox next to the name of the item is checked.\n");
+    printf("PsychHID-ERROR: 6. Restart %s.\n", PSYCHTOOLBOX_SCRIPTING_LANGUAGE_NAME);
+    printf("PsychHID-ERROR: 7. Execute the 'KbCheck' command as a simple test, which should hopefully work now without errors.\n");
+    printf("PsychHID-ERROR: 8. If it doesn't work, go back to step 5, but *uncheck* the checkbox, close the GUI,\n");
+    printf("PsychHID-ERROR:    then reopen the GUI, go back to step 5 and *check* the checkbox again. Unchecking\n");
+    printf("PsychHID-ERROR:    and then checking the checkbox again, and closing and reopening the security GUI and\n");
+    printf("PsychHID-ERROR:    Matlab/Octave/Terminal inbetween usually fixes these issues caused by Apple macOS GUI bugs.\n");
+    printf("PsychHID-ERROR:    It may also be neccessary to delete the item from the list by marking it and then using the\n");
+    printf("PsychHID-ERROR:    - (Minus) button at the bottom of the list view. Closing the GUI, reopening and readding the\n");
+    printf("PsychHID-ERROR:    Matlab/Octave/Terminal item to the list by clicking the + (Plus) button.\n");
+    printf("PsychHID-ERROR: 9. If it still doesn't work, retry the procedure - rinse, wash, repeat.\n");
+    printf("PsychHID-ERROR: 10. If it works without errors, retry if your own scripts or our demos now work again.\n");
+    printf("PsychHID-ERROR: 11. If none of this works, you may be able to buy paid support from us: 'help PsychPaidSupportAndServices'.\n\n\n");
+
+    // Try to bind and call IOHIDRequestAccess() to bring up the security prompt, which
+    // should guide the user into fixing this Apple security bullshit:
+    if (fpIOHIDRequestAccess == NULL)
+        fpIOHIDRequestAccess = dlsym(RTLD_DEFAULT, "IOHIDRequestAccess");
+
+    if ((fpIOHIDRequestAccess != NULL) && fpIOHIDRequestAccess(kIOHIDRequestTypeListenEvent))
+        return(FALSE);
+
+    return(TRUE);
 }
 
 PsychError PsychHIDOSKbCheck(int deviceIndex, double* scanList)
@@ -685,7 +738,7 @@ static void PsychHIDKbQueueCallbackFunction(void *target, IOReturn result, void 
     // The CFRunLoop of the thread in KbQueueWorkerThreadMain() is the one that executes here:
     IOHIDQueueRef queue = (IOHIDQueueRef) sender;
     IOHIDValueRef valueRef = NULL;
-    int deviceIndex = (int) target;
+    int deviceIndex = (int) (size_t) target;
     double timestamp;
     int eventValue;
     long keysUsage = -1;
@@ -856,7 +909,7 @@ static void PsychHIDKbQueueCallbackFunction(void *target, IOReturn result, void 
 
 // Async processing thread for keyboard events:
 static void *KbQueueWorkerThreadMain(void *inarg) {
-    int deviceIndex = (int) inarg;
+    int deviceIndex = (int) (size_t) inarg;
     int rc;
 
     // Assign a name to ourselves, for debugging:
@@ -922,7 +975,7 @@ PsychError PsychHIDOSKbElementAdd(IOHIDElementRef element, IOHIDQueueRef queue, 
     return(PsychError_none);
 }
 
-PsychError PsychHIDOSKbQueueCreate(int deviceIndex, int numScankeys, int* scanKeys, int numValuators, int numSlots, unsigned int flags, unsigned int windowHandle)
+PsychError PsychHIDOSKbQueueCreate(int deviceIndex, int numScankeys, int* scanKeys, int numValuators, int numSlots, unsigned int flags, psych_uint64 windowHandle)
 {
     pRecDevice deviceRecord;
     psych_bool verbose = getenv("PSYCHHID_TELLME") != NULL;
@@ -932,7 +985,7 @@ PsychError PsychHIDOSKbQueueCreate(int deviceIndex, int numScankeys, int* scanKe
 
     // Since the macOS 10.15 Catalina trainwreck, TISGetInputSourceProperty() must execute on the main thread, or crash, because Apple bs!
     if (currentKeyboard)
-        dispatch_sync(dispatch_get_main_queue(), ^{ uchr = (CFDataRef) TISGetInputSourceProperty(currentKeyboard, kTISPropertyUnicodeKeyLayoutData); });
+        DISPATCH_SYNC_ON_MAIN({ uchr = (CFDataRef) TISGetInputSourceProperty(currentKeyboard, kTISPropertyUnicodeKeyLayoutData); });
 
     keyboardLayout = (const UCKeyboardLayout*) ((uchr) ? CFDataGetBytePtr(uchr) : NULL);
     kbdType = LMGetKbdType();

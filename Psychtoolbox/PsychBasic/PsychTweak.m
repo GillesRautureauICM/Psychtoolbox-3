@@ -9,7 +9,7 @@ function varargout = PsychTweak(cmd, varargin)
 % executing this function.
 %
 % Currently the function mostly implements tweaks for MS-Windows to allow
-% to cope with the brokeness of the system, especially in the domain of
+% to cope with the brokenness of the system, especially in the domain of
 % timing and timestamping.
 %
 %
@@ -32,7 +32,7 @@ function varargout = PsychTweak(cmd, varargin)
 %
 % PsychTweak('ScreenVerbosity', verbosity);
 %
-% -- Set initial level of verbosity for Screen(). This can be overriden via
+% -- Set initial level of verbosity for Screen(). This can be overridden via
 % Screen('Preference','Verbosity'). The default verbosity is 3 = Errors,
 % Warnings and some Info output.
 %
@@ -92,6 +92,20 @@ function varargout = PsychTweak(cmd, varargin)
 %
 % MS-Windows only tweaks:
 % -----------------------
+%
+% PsychTweak('DontDisableProcessorIdling', dontDisable);
+% -- Don't disable processor idling during certain Screen() operations, e.g.,
+% during video refresh calibrations and timing startup tests in 'OpenWindow' if
+% 'dontDisable' is set to 1. By default, processor idling is disabled during some
+% tests, to keep cpu cores 100% busy and prevent cpu power management actions like
+% switching to higher C-states, ie. prevent switching to C1 or higher. This causes
+% a temporary increase in system idle power consumption, but reduces timing noise
+% caused by C-state switching, and thereby improves the quality and reliability of
+% the timing tests, hopefully reducing the frequency of "false positive" test
+% failures. However, this could interfere with the operation of other 3rd party
+% cpu performance tweaking tools and other low level tuning measures. Therefore
+% this PsychTweak() setting allows to skip disable of processor idling during tests.
+%
 %
 % PsychTweak('BackwardTimejumpTolerance', secs);
 %
@@ -317,6 +331,27 @@ if strcmpi(cmd, 'UseGPUIndex')
     val = round(val);
 
     setenv('PSYCH_USE_GPUIDX', sprintf('%i', val));
+    return;
+end
+
+if strcmpi(cmd, 'DontDisableProcessorIdling')
+    if length(varargin) < 1
+        error('Must provide the dontDisable flag.');
+    end
+
+    val = varargin{1};
+    if ~ismember(val, [0, 1])
+        error('dontDisable flag must be 0 or 1.');
+    end
+
+    if val
+        % Set marker variable:
+        setenv('PSYCH_DONT_DISABLE_CPU_IDLING', '1');
+    else
+        % Delete marker variable:
+        setenv('PSYCH_DONT_DISABLE_CPU_IDLING');
+    end
+
     return;
 end
 

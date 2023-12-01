@@ -260,6 +260,7 @@ psych_bool PsychOSOpenOnscreenWindow(PsychScreenSettingsType *screenSettings, Ps
 
     // NULL-out Cocoa window handle, so this is well-defined in case of error:
     windowRecord->targetSpecific.windowHandle = NULL;
+    windowRecord->targetSpecific.deviceContext = NULL;
 
     // Retrieve windowLevel, an indicator of where non-CGL / non-fullscreen windows should
     // be located wrt. to other windows. -2 = Allow regular window manager control of stacking
@@ -282,7 +283,8 @@ psych_bool PsychOSOpenOnscreenWindow(PsychScreenSettingsType *screenSettings, Ps
     PsychGetGlobalScreenRect(screenSettings->screenNumber, screenrect);
     if (PsychMatchRect(screenrect, windowRecord->rect)) windowRecord->specialflags |= kPsychIsFullscreenWindow;
 
-    if ((windowRecord->specialflags & kPsychIsFullscreenWindow) &&
+    // External display methods need a CALayer for interop, which needs a NSWindow, ergo Cocoa, to attach to:
+    if ((windowRecord->specialflags & kPsychIsFullscreenWindow) && !(windowRecord->specialflags & kPsychExternalDisplayMethod) &&
         !(PsychPrefStateGet_ConserveVRAM() & kPsychUseAGLForFullscreenWindows))
         useCGL = TRUE;
 
@@ -517,7 +519,7 @@ psych_bool PsychOSOpenOnscreenWindow(PsychScreenSettingsType *screenSettings, Ps
     }
 
     // Finalize attribute array with NULL.
-    attribs[attribcount++]=(CGLPixelFormatAttribute)NULL;
+    attribs[attribcount++]=(CGLPixelFormatAttribute) 0;
 
     // Init to zero:
     windowRecord->targetSpecific.pixelFormatObject = NULL;
@@ -669,9 +671,6 @@ psych_bool PsychOSOpenOnscreenWindow(PsychScreenSettingsType *screenSettings, Ps
         }
     }
 
-    // NULL-out the AGL context field, just for safety...
-    windowRecord->targetSpecific.deviceContext = NULL;
-
     // Ok, the master OpenGL rendering context for this new onscreen window is up and running.
     // Auto-detect and bind all available OpenGL extensions via GLEW:
     glerr = glewInit();
@@ -740,9 +739,6 @@ psych_bool PsychOSOpenOnscreenWindow(PsychScreenSettingsType *screenSettings, Ps
         }
     }
 
-    // Store Cocoa onscreen window handle:
-    windowRecord->targetSpecific.windowHandle = cocoaWindow;
-
     // Objective-C setup path, using Cocoa + NSOpenGLContext wrapped around already
     // existing and setup CGLContext:
     if (!useCGL && PsychCocoaSetupAndAssignOpenGLContextsFromCGLContexts(cocoaWindow, windowRecord)) {
@@ -769,8 +765,8 @@ psych_bool PsychOSOpenOnscreenWindow(PsychScreenSettingsType *screenSettings, Ps
             // Use of CoreVideo is needed on 10.7 and later due to brokeness of the old method (thanks Apple!):
             if (PsychPrefStateGet_Verbosity() > 2) {
                 printf("PTB-INFO: Will use fragile CoreVideo timestamping as fallback if beamposition timestamping doesn't work.\n");
-                // Recommend use of kernel driver if it isn't installed already for all but Intel GPU's:
-                if (!PsychOSIsKernelDriverAvailable(screenSettings->screenNumber) && !strstr((char*) glGetString(GL_VENDOR), "Intel")) {
+                // Recommend use of kernel driver if it isn't installed already:
+                if (!PsychOSIsKernelDriverAvailable(screenSettings->screenNumber) /* && !strstr((char*) glGetString(GL_VENDOR), "Intel") */) {
                     printf("PTB-INFO: Installation of the PsychtoolboxKernelDriver is strongly recommended if you care about precise visual\n");
                     printf("PTB-INFO: onset timestamping or timing. See 'help PsychtoolboxKernelDriver' for installation instructions.\n");
                 }
@@ -819,8 +815,8 @@ psych_bool PsychOSOpenOnscreenWindow(PsychScreenSettingsType *screenSettings, Ps
             // VBLtimestampingmode 0 or -1 -- No CoreVideo fallback for timestamping if beamposition timestamping is unavailable:
             // This is the new default as of Psychtoolbox 3.0.12 to avoid the buggy, crashy, unreliably CoreVideo fallback.
 
-            // Recommend use of kernel driver if it isn't installed already for all but Intel GPU's:
-            if (!PsychOSIsKernelDriverAvailable(screenSettings->screenNumber) && !strstr((char*) glGetString(GL_VENDOR), "Intel")) {
+            // Recommend use of kernel driver if it isn't installed already:
+            if (!PsychOSIsKernelDriverAvailable(screenSettings->screenNumber) && (PsychPrefStateGet_Verbosity() > 2) /* && !strstr((char*) glGetString(GL_VENDOR), "Intel") */) {
                 printf("PTB-INFO: Installation of the PsychtoolboxKernelDriver is strongly recommended if you care about precise visual\n");
                 printf("PTB-INFO: onset timestamping or timing. See 'help PsychtoolboxKernelDriver' for installation instructions.\n");
             }
@@ -847,6 +843,12 @@ psych_bool PsychOSOpenOnscreenWindow(PsychScreenSettingsType *screenSettings, Ps
         // Pass through as simple mode, because our caller needs to know if VRR was requested
         // to be enabled - this then triggers proper error handling in caller:
         windowRecord->vrrMode = kPsychVRRSimple;
+    }
+
+    // Execute workaround for the latest macOS 12 bugs wrt. CoreAnimation/Metal/Vulkan interop:
+    if ((windowRecord->specialflags & kPsychExternalDisplayMethod) && !PsychCocoaMetalWorkaround(windowRecord)) {
+        printf("\nPTB-ERROR[CreateNewWindow failed]: Failed to execute PsychCocoaMetalWorkaround() for Vulkan/Metal interop macOS bugs.\n");
+        return(FALSE);
     }
 
     // Done.

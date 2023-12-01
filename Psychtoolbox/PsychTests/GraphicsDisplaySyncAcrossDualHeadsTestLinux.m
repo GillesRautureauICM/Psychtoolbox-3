@@ -74,7 +74,7 @@ if size(oldmappings, 2) < 2
 end
 
 % Open windows:
-oldsync = Screen('Preference', 'SkipSyncTests', 2);
+oldsync = Screen('Preference', 'SkipSyncTests', 1);
 w(1) = Screen('OpenWindow', screenids(1), 0);
 Screen('Preference', 'SkipSyncTests', oldsync);
 
@@ -263,7 +263,7 @@ fprintf('That would indicate drift between the display heads due to missing sync
 
 % Some plotting:
 close all;
-if (range(timinginfo(1, 1, :)) > 0) && (range(timinginfo(1, 2, :)) > 0)
+if (psychrange(timinginfo(1, 1, :)) > 0) && (psychrange(timinginfo(1, 2, :)) > 0)
     plot(1:nrtrials, squeeze(timinginfo(1,1,:)), 'r', 1:nrtrials, squeeze(timinginfo(1,2,:)), 'b');
     title('Beampositions for both displays: Red = Head 1, Blue=Head 2');
 

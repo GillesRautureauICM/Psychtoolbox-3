@@ -3,6 +3,8 @@ PsychSourceGL/Projects/Linux/build/*
 PsychSourceGL/Projects/Windows/build/*
 PsychSourceGL/Source/build/
 build/
+# except this one which is committed
+!PsychSourceGL/Cohorts/HID_Utilities_64Bit/build
 *.o
 *~
 .DS_Store
@@ -18,6 +20,7 @@ PsychSourceGL/Cohorts/Kinect-v16-withsource/
 PsychSourceGL/Cohorts/libDC1394/libdc1394-2.0.1/
 Psychtoolbox/PsychInitialize/startup.m
 Psychtoolbox/ptbflavorinfo.txt
+Psychtoolbox/PsychBasic/Octave3LinuxFiles64/
 .fuse_*
 liboctave.*
 liboctinterp.*
@@ -32,3 +35,4 @@ managementtools/ptbregistration*
 *.VC.db
 *.suo
 *.sqlite
+.vscode/

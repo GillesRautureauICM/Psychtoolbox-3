@@ -9,7 +9,7 @@ function SetMouse(x,y,windowPtrOrScreenNumber, mouseid, detachFromMouse)
 % Otherwise it's "global", i.e. relative to the origin of the main screen
 % (Screen 0). It is advisable to specify an onscreen window handle for
 % proper handling of Retina displays on macOS if you use backwards
-% compatibilty mode.
+% compatibility mode.
 %
 % On Linux with X11, the optional 'mouseid' parameter allows to select
 % which of potentially multiple cursors should be repositioned. On OS/X and
@@ -41,7 +41,7 @@ function SetMouse(x,y,windowPtrOrScreenNumber, mouseid, detachFromMouse)
 % 4/14/03   awi     ****** OS X-specific fork from the OS 9 version *******
 %                   Added call to Screen('PositionCursor'...) for OS X.
 % 10/12/04  awi     Cosmetic changes to help.  This file should be modified 
-%                   after the great mouse shift to state SetMouse is depricated.
+%                   after the great mouse shift to state SetMouse is deprecated.
 % 11/18/04  awi     Renamed "PositionCursor" to "PositionCursorHelper".
 % 02/21/06  mk      Added Linux support.
 % 06/17/06  mk      Added Windows support.
@@ -71,7 +71,7 @@ end
 % OSX handling of Retina displays:
 if IsOSX && (Screen('WindowKind', windowPtrOrScreenNumber) == 1)
     winfo = Screen('GetWindowInfo', windowPtrOrScreenNumber);
-    if ~winfo.IsFullscreen || (Screen('Preference', 'WindowShieldingLevel') < 2000)
+    if ~winfo.IsFullscreen || (Screen('Preference', 'WindowShieldingLevel') < 2000) || winfo.SysWindowHandle > 0
         % Cocoa - Half the factor is right:
         isf = winfo.ExternalMouseMultFactor / 2;
     else
@@ -81,6 +81,12 @@ if IsOSX && (Screen('WindowKind', windowPtrOrScreenNumber) == 1)
 
     x = x * isf;
     y = y * isf;
+end
+
+if IsLinux && (Screen('WindowKind', windowPtrOrScreenNumber) == 1)
+    rect = Screen('GlobalRect', windowPtrOrScreenNumber);
+    x = x + rect(1);
+    y = y + rect(2);
 end
 
 Screen('SetMouseHelper', windowPtrOrScreenNumber, round(x), round(y), mouseid, detachFromMouse);

@@ -2,10 +2,21 @@ function [spectrum,qual] = MeasSpd(S,meterType,syncMode)
 % [spectrum,qual] = MeasSpd([S],[meterType],[syncMode])
 %
 % This routine splines the raw return values from the
-% meter to the wavelength sampling S.  The splining
-% handles conversion of power units according to
-% to the wavelength sampling delta.  If S is not passed,
-% it is set to [380 5 81].
+% meter to the wavelength sampling S vector, with
+% S = [startWl deltaWl nWlSamples].
+% 
+% The splining handles conversion of power units according to to the
+% wavelength sampling deltaWl. That is, power is converted into units of
+% power per wlband. This convention, used widely in PTB, means that you can
+% omit the multiplication by deltaWl when numerically integrating over
+% wavelength, but is a little counterintuitive.
+%
+% If you later want to spline to other wl samplines, use SplineSpd to
+% maintain the PTB convention.  Note that splining to 1 nm spacing puts the
+% units into power per nm, as at 1 nm spacing the two conventions are the
+% same.
+% 
+% If S is not passed, it is set to [380 5 81].
 %
 % Tries to handle low light level case gracefully by returning
 % zero as the answer.
@@ -18,14 +29,14 @@ function [spectrum,qual] = MeasSpd(S,meterType,syncMode)
 % syncMode = 'on':  Try to sync integration time with display, if meter supports it (default)
 % syncMode = 'off': Don't try to sync, even if meter supports it.
 %
-% 9/3/93		dhb		Added default handling of S.
-% 9/14/93		jms		Added global no hardware switch
-% 10/1/93		dhb		Removed print on error, passed qual on up
-% 10/4/93		dhb		Handle quality code 18 properly.
-% 1/16/94		jms		Removed 'exist' check and declared globals.
-% 2/20/94		dhb		Modified for CMETER.
-% 8/11/94		dhb		Handle sync mode error condition.
-% 9/7/94		dhb		Remove sync mode message.
+% 9/3/93        dhb     Added default handling of S.
+% 9/14/93       jms     Added global no hardware switch
+% 10/1/93       dhb     Removed print on error, passed qual on up
+% 10/4/93       dhb     Handle quality code 18 properly.
+% 1/16/94       jms     Removed 'exist' check and declared globals.
+% 2/20/94       dhb     Modified for CMETER.
+% 8/11/94       dhb     Handle sync mode error condition.
+% 9/7/94        dhb     Remove sync mode message.
 % 11/6/96       dhb     Remove extra call to CMETER('Measure').
 % 6/17/98       dhb     Add meterType switch.
 % 7/1/98        dhb,jmk Fix bug in switch.
@@ -57,20 +68,20 @@ try
         % PR-650
         case 1,
             [spectrum, qual] = PR650measspd(S,syncMode);
-            
+
         % PR-655
         case 4,
             [spectrum, qual] = PR655measspd(S,syncMode);
-            
+
         % PR-670
         case 5,
             [spectrum, qual] = PR670measspd(S,syncMode);
-            
+
         % PR-705
         case 6,
             qual = 0;
             spectrum = PR705measspd(S);
-            
+
         otherwise,
             error('Unknown meter type');
     end

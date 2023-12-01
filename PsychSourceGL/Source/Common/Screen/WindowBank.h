@@ -169,12 +169,14 @@
 #define kPsychNeedVBODouble12Workaround     (1ULL << 31) // 'specialflags': Gfx driver bug makes < 2 component vertex attribute buffers problematic if GL_DOUBLE is used for submission.
 #define kPsychExternalDisplayMethod         (1ULL << 32) // 'specialflags': This window is not used for actual visual stimulation, as some external display mechanism is used, e.g., Vulkan or VR compositor.
 #define kPsychDontAutoResetOneshotFlags     (1ULL << 33) // 'specialFlags': Do not auto-reset the "one-shot" flip flags after a flip, ie. don't clear kPsych*ForFlipOnce flags.
+#define kPsychDontUseFlipperThread          (1ULL << 34) // 'specialFlags': Do not allow use of the background flipper thread, because it conflicts with some external display method.
+#define kPsychSkipSecondaryVsyncForFlip     (1ULL << 35) // 'specialflags': Perform flips on this windows associated secondary/slavewindow without VSYNC, e.g., for mirror mode.
 
 // The following numbers are allocated to imagingMode flag above: A (S) means, shared with specialFlags:
 // 1,2,4,8,16,32,64,128,256,512,1024,S-2048,4096,S-8192,16384,32768,S-65536,2^17,2^18,2^19,2^20,2^21,2^22,2^23,2^24,S-2^25. --> Flags of 2^26 and higher are available...
 
 // The following numbers are allocated to specialFlags flag above: A (S) means, shared with imagingMode:
-// 1,2,4,8,16,32,64,128,256,512,1024,S-2048,4096,S-8192, 16384, 32768, S-65536,2^17,2^18,2^19,2^20,2^21,2^22,2^23,2^24,S-2^25,2^26,2^27,2^28,2^29,2^30,2^31,2^32,2^33. --> Flags of 2^34 and higher are available...
+// 1,2,4,8,16,32,64,128,256,512,1024,S-2048,4096,S-8192, 16384, 32768, S-65536,2^17,2^18,2^19,2^20,2^21,2^22,2^23,2^24,S-2^25,2^26,2^27,2^28,2^29,2^30,2^31,2^32,2^33,2^34,2^35. --> Flags of 2^36 and higher are available...
 
 // Definition of a single hook function spec:
 typedef struct PsychHookFunction*   PtrPsychHookFunction;
@@ -236,7 +238,7 @@ typedef struct{
     CGLPixelFormatObj   pixelFormatObject;
     CGLContextObj       glusercontextObject;    // OpenGL context for userspace rendering code, e.g., moglcore...
     CGLContextObj       glswapcontextObject;    // OpenGL context for performing doublebuffer swaps in PsychFlipWindowBuffers().
-    void*               deviceContext;          // Pointer to an AGLContext object, or a NULL-pointer.
+    void*               deviceContext;          // Pointer to an CALayer (likely CAMetalLayer) object if Cocoa is used, or a NULL-pointer otherwise.
     // NSWindow* type stored in void* to avoid "Cocoa/Objective-C pollution" in this header file.
     void*               windowHandle;           // Handle for Cocoa window when using windowed mode. (NULL in non-windowed mode).
 
@@ -264,6 +266,9 @@ typedef struct{
 #if defined(PTB_USE_WAYLAND_PRESENT) || defined(PTB_USE_WAYLAND)
 #include <wayland-client.h>
 #endif
+
+// For xcb_special_event_t:
+#include <xcb/xcb.h>
 
 #ifdef PTB_USE_WAFFLE
 // Definition of Linux/Waffle specific information:
@@ -302,13 +307,18 @@ typedef struct {
 // Definition of Linux/X11 specific information:
 typedef struct{
     GLXContext        contextObject;       // GLX OpenGL rendering context.
-    int               pixelFormatObject;   // Just here for compatibility. Its a dummy entry without meaning.
+    XID               visualId;            // X visual id of the associated visual.
+    GLXFBConfig       pixelFormatObject;   // Selected GLXFBConfig. Needed for interop with external clients, e.g., OpenXR.
     Display*          deviceContext;       // Pointer to the X11 display connection.
     Display*          privDpy;             // Pointer to the private X11 display connection for non-OpenGL ops.
     GLXWindow         windowHandle;        // Handle to the onscreen window.
     Window            xwindowHandle;       // Associated X-Window if any.
     GLXContext        glusercontextObject; // OpenGL context for userspace rendering code, e.g., moglcore...
     GLXContext        glswapcontextObject; // OpenGL context for performing doublebuffer swaps in PsychFlipWindowBuffers().
+    XID               present_notify_event_id[2]; // Present ids / contexts for reception of notify events directly from X11/Present.
+    xcb_special_event_t* present_notify_queue[2]; // Private event queues for reception of notify events directly from X11/Present.
+    XID               syncCounter[2];      // XID's of NetWM XSync sync counters for extended client-compositor synchronization.
+    psych_uint64      targetSyncCounter;   // Target value to fetch compositor present timestamp for in NetWM mode.
 } PsychTargetSpecificWindowRecordType;
 #endif
 

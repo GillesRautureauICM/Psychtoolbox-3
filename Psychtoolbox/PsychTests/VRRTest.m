@@ -1,5 +1,5 @@
-function VRRTest(test, n, maxFlipDelta, hwmeasurement, testImage, saveplots, screenNumber)
-% VRRTest([test='sine'][, n=2000][, maxFlipDelta=0.2][, hwmeasurement=0][, testImage][, saveplots=0][, screenNumber=max])
+function VRRTest(test, n, maxFlipDelta, hwmeasurement, testImage, saveplots, screenNumber, usevulkan, jitterFrac)
+% VRRTest([test='sine'][, n=2000][, maxFlipDelta=0.2][, hwmeasurement=0][, testImage][, saveplots=0][, screenNumber=max][, usevulkan=0][, jitterFrac=0])
 %
 % Test accuracy of VRR stimulation with variable timing, aka "FreeSync",
 % "DisplayPort Adaptive Sync", "HDMI VRR" or "G-Sync".
@@ -81,6 +81,12 @@ function VRRTest(test, n, maxFlipDelta, hwmeasurement, testImage, saveplots, scr
 % 'screenNumber' Number of screen to test on. Maximum X-Screen by default.
 %
 %
+% 'usevulkan' If set to 1, use Vulkan display backend instead of OpenGL backend.
+% Default is 0 = Use standard OpenGL backend.
+%
+% 'jitterFrac' Amount of random timing noise to introduce into delay before
+% flip submission. 0 - 1 makes sense, 0 is the default.
+%
 % You can abort the test earlier by pressing the ESC key.
 %
 % The main plot figure will plot actual measured delay between successive flips
@@ -135,9 +141,21 @@ if nargin < 6 || isempty(saveplots)
 end
 
 % Use screen with highest number by default:
-if nargin < 7
+if nargin < 7 || isempty(screenNumber)
     screenNumber = [];
 end
+
+if nargin < 8 || isempty(usevulkan)
+    usevulkan = 0;
+end
+
+if nargin < 9 || isempty(jitterFrac)
+    jitterFrac = 0;
+end
+
+% Should CLOCK_MONOTONIC timestamps be used for Linux+Vulkan experiments?
+% Only set to non-zero on kleinerm's Vulkan research protoype setups:
+tsMonotonic = 0 * usevulkan * IsLinux;
 
 if ischar(testImage)
     % Read image from image file and extend it with 200 lines of neutral gray:
@@ -183,6 +201,10 @@ try
     if hwmeasurement == 3
         % Enable T-Lock generation for Bits#
         PsychImaging('AddTask', 'General', 'EnableBits++Bits++Output');
+    end
+
+    if usevulkan
+        PsychImaging('AddTask', 'General', 'UseVulkanDisplay');
     end
 
     % Open double-buffered fullscreen (kms-pageflipped) window with black background and
@@ -231,6 +253,7 @@ try
 
     if hwmeasurement == 5
         % Activate photo-diode timestamping driver:
+        InitializePsychSound(1);
         pdiode = PsychPhotodiode('Open');
 
         % Perform calibration of optimal photo-diode trigger level:
@@ -251,6 +274,9 @@ try
     so=ts;
     sodpixx = ts;
     boxTime = ts;
+    submitheadroom = ts;
+    submitdelay = ts;
+
     valids = false(1,n);
     meascount = 0;
 
@@ -268,7 +294,7 @@ try
     minFlipDelta = ifi;
 
     % minVRR == minimum refresh rate in VRR range:
-    minVRR = 33;
+    minVRR = 48;
 
     durRange = maxFlipDelta - minFlipDelta;
 
@@ -367,6 +393,19 @@ try
             end
         end
 
+        % For Linux experiments, use tsMonotonic CLOCK_MONOTONIC timestamps and
+        % remap accordingly:
+        if tsMonotonic
+            [~, ~, ~, tnow] = GetSecs('AllClocks');
+            WaitSecs((tdeadline - tnow) * rand * jitterFrac);
+            [~, ~, ~, wake] = GetSecs('AllClocks');
+        else
+            wake = WaitSecs((tdeadline - GetSecs) * rand * jitterFrac);
+        end
+
+        submitheadroom(i) = tdeadline - wake;
+        submitdelay(i) = wake - tvbl;
+
         % Request flip at time tdeadline.
         % Return the driver reported timestamp when post-flip scanout starts in
         % tvbl and so(i).
@@ -385,6 +424,12 @@ try
             meascount = meascount + 1;
             tPhoto = PsychPhotodiode('WaitSignal', pdiode);
             if ~isempty(tPhoto)
+                if tsMonotonic
+                    % For Linux experiments, use tsMonotonic CLOCK_MONOTONIC timestamps and remap accordingly:
+                    [GetSecsTime, WallTime, syncErrorSecs, MonotonicTime] = GetSecs('AllClocks');
+                    tPhoto = tPhoto - GetSecsTime + MonotonicTime;
+                end
+
                 sodpixx(meascount) = tPhoto;
             else
                 sodpixx(meascount) = NaN;
@@ -473,6 +518,8 @@ try
     beampos = beampos(1:n);
     td = td(1:n);
     dpixxdelay = dpixxdelay(1:n);
+    submitdelay = submitdelay(2:n);
+    submitheadroom = submitheadroom(2:n);
 
     %sodpixx = sodpixx(valids);
     %boxTime = boxTime(valids);
@@ -494,17 +541,36 @@ try
     td = td(2:end) * 1000;
     plot(td, 'r');
 
+    err = deltaT - td;
+
     % Green = Error between requested and actual frame duration for each flip:
-    plot(deltaT - td, 'g');
+    plot(err, 'g');
+
+    % Find presents that are more than 1 msec too early - ie. definite failures.
+    realbadones = find((err) < -1);
+    if length(realbadones) > 0
+        warning('WARNING: Multiple presents too early!! %i items.\n', length(realbadones));
+    end
 
     % Red = Median error over whole run:
-    plot(ones(1,n) * median(deltaT - td), 'r');
-    fprintf('Avg diff target vs. true: %f msecs. stddev %f msecs. Median diff %f msecs.\n', ...
-            mean(deltaT - td), std(deltaT - td), median(deltaT - td));
+    plot(ones(1,n) * median(err), 'r');
+    fprintf('Avg diff target vs. true: %f msecs. stddev %f msecs. Median diff %f msecs. Too early: %i\n', ...
+            mean(err), std(err), median(err), length(realbadones));
+    fprintf('Without 1st two samples : %f msecs. stddev %f msecs. Median diff %f msecs. Too early: %i\n', ...
+            mean(err(3:end)), std(err(3:end)), median(err(3:end)), length(realbadones));
     title('Delta between successive Flips in milliseconds [red=requested, blue=actual]:');
     text(0,-10, 'Difference (green), median error (horizontal red):');
-    text(0,-30, sprintf('Avg diff target vs. true: %f msecs. stddev %f msecs. Median diff %f msecs.\n', ...
-                        mean(deltaT - td), std(deltaT - td), median(deltaT - td)));
+    text(0,-30, sprintf('Avg diff target vs. true: %f msecs. stddev %f msecs. Median diff %f msecs. Too early: %i\n', ...
+                        mean(err), std(err), median(err), length(realbadones)));
+    xlabel('Number');
+    ylabel('msecs');
+
+    % Plot random submit delay in magenta:
+    % plot(submitdelay * 1000, 'm');
+
+    % Plot random submit headroom in magenta:
+    plot(submitheadroom * 1000, 'm');
+
     grid on;
     hold off;
 
@@ -516,7 +582,7 @@ try
     end
 
     figure;
-    hist(deltaT - td, 100);
+    hist(err, 100);
     title('Histogram of difference between requested and actual frame duration [msecs]');
 
     % Figure 2 shows the recorded beam positions if hw and sw setup allowed that:

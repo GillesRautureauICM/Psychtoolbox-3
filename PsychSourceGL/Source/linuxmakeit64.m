@@ -1,4 +1,4 @@
-function linuxmakeit64(mode)
+function linuxmakeit64(mode, cibuild)
 % This is the GNU/Linux version of makeit to build the Linux
 % mex files for 64-Bit Matlab on Linux.
 
@@ -6,8 +6,12 @@ if ~IsLinux(1) || IsOctave
     error('This script is for 64-Bit Linux on Matlab only!');
 end
 
-if nargin < 1
+if nargin < 1 || isempty(mode)
     mode = 0;
+end
+
+if nargin < 2 || isempty(cibuild)
+    cibuild = 0;
 end
 
 % Rebuild all request?
@@ -15,8 +19,8 @@ if mode == -1
     % Yes: Call ourselves recursively on all plugins/modes to rebuild
     % everything:
     tic;
-    for mode = 0:15
-        linuxmakeit64(mode);
+    for mode = 0:16
+        linuxmakeit64(mode, cibuild);
     end
     elapsedsecs = toc;
     fprintf('Total rebuild time for all mex files was %f seconds. Bye.\n\n', elapsedsecs);
@@ -28,7 +32,7 @@ fprintf('Building plugin type %i ...\n\n', mode);
 if mode==0
     % Build Screen.mexa64: We build against GStreamer-1
     mex -c Common/Screen/tinyexr.cc
-    mex CFLAGS='$CFLAGS -fPIC -std=gnu99 -fexceptions -pthread' -outdir ../Projects/Linux/build/ -output Screen -largeArrayDims -DMEX_DOUBLE_HANDLE -DPTBMODULE_Screen -DPTB_USE_GSTREAMER -DPTBVIDEOCAPTURE_LIBDC -DPTB_USE_NVSTUSB -DGLEW_STATIC -D_GNU_SOURCE -I/usr/X11R6/include -I/usr/include/gstreamer-1.0 -I/usr/lib/x86_64-linux-gnu/gstreamer-1.0/include -I/usr/include/glib-2.0 -I/usr/lib/glib-2.0/include -I/usr/lib/i386-linux-gnu/glib-2.0/include -I/usr/lib/x86_64-linux-gnu/glib-2.0/include -I/usr/include/libxml2 -I../Cohorts/libnvstusb-code-32/include -ICommon/Base -ICommon/Screen -ILinux/Base -ILinux/Screen -L/usr/X11R6/lib  "Linux/Base/*.c" "Linux/Screen/*.c" "Common/Screen/*.c" "Common/Base/*.c" tinyexr.o -lc -lrt -ldl -lGL -lGLU -lX11 -lXext -lX11-xcb -lxcb -lxcb-dri3 -lgstreamer-1.0 -lgstbase-1.0 -lgstapp-1.0 -lgstvideo-1.0 -lgstpbutils-1.0 -lgobject-2.0 -lgmodule-2.0 -lxml2 -lgthread-2.0 -lglib-2.0 -lXxf86vm -ldc1394 -lusb-1.0 -lpciaccess -lXi -lXrandr -lXfixes
+    mex CFLAGS='$CFLAGS -fPIC -std=gnu99 -fexceptions -pthread' -outdir ../Projects/Linux/build/ -output Screen -largeArrayDims -DMEX_DOUBLE_HANDLE -DPTBMODULE_Screen -DPTB_USE_GSTREAMER -DPTBVIDEOCAPTURE_LIBDC -DPTB_USE_NVSTUSB -DGLEW_STATIC -D_GNU_SOURCE -I/usr/include -I/usr/include/gstreamer-1.0 -I/usr/lib/x86_64-linux-gnu/gstreamer-1.0/include -I/usr/include/glib-2.0 -I/usr/lib/glib-2.0/include -I/usr/lib/i386-linux-gnu/glib-2.0/include -I/usr/lib/x86_64-linux-gnu/glib-2.0/include -I/usr/include/libxml2 -I../Cohorts/libnvstusb-code-32/include -ICommon/Base -ICommon/Screen -ILinux/Base -ILinux/Screen "Linux/Base/*.c" "Linux/Screen/*.c" "Common/Screen/*.c" "Common/Base/*.c" tinyexr.o -lc -lrt -ldl -lGL -lGLU -lX11 -lXext -lX11-xcb -lxcb -lxcb-dri3 -lxcb-present -lgstreamer-1.0 -lgstbase-1.0 -lgstapp-1.0 -lgstvideo-1.0 -lgstpbutils-1.0 -lgobject-2.0 -lgmodule-2.0 -lxml2 -lgthread-2.0 -lglib-2.0 -lXxf86vm -ldc1394 -lusb-1.0 -lpciaccess -lXi -lXrandr -lXfixes -lXcomposite
     unix(['mv ../Projects/Linux/build/Screen.' mexext ' ' PsychtoolboxRoot 'PsychBasic/']);
 end
 
@@ -51,9 +55,14 @@ if mode==3
 end
 
 if mode==4
-    % Build Eyelink.mexa64:
-    mex CFLAGS='$CFLAGS -fPIC -std=gnu99 -fexceptions -pthread' -outdir ../Projects/Linux/build/ -output Eyelink -largeArrayDims -DMEX_DOUBLE_HANDLE -DPTBMODULE_Eyelink -ICommon/Base -ILinux/Base -ICommon/Eyelink -ICommon/Screen  "Linux/Base/*.c" "Common/Base/*.c" "Common/Eyelink/*.c" -leyelink_core -lc -lrt -ldl
+    % Build Eyelink.mexa64: Needs Eyelink SDK (eyelink_core component) from SR-Research.
+    % See https://www.sr-research.com/support/docs.php?topic=linuxsoftware for install instructions.
+    try
+    mex CFLAGS='$CFLAGS -fPIC -std=gnu99 -fexceptions -pthread' -outdir ../Projects/Linux/build/ -output Eyelink -largeArrayDims -DMEX_DOUBLE_HANDLE -DPTBMODULE_Eyelink -I/usr/include/EyeLink -ICommon/Base -ILinux/Base -ICommon/Eyelink -ICommon/Screen  "Linux/Base/*.c" "Common/Base/*.c" "Common/Eyelink/*.c" -leyelink_core -lc -lrt -ldl
     unix(['mv ../Projects/Linux/build/Eyelink.' mexext ' ' PsychtoolboxRoot 'PsychBasic/']);
+    catch
+        disp(psychlasterror);
+    end
 end
 
 if mode==5
@@ -67,7 +76,7 @@ if mode==6
     curdir = pwd;
     cd('../../Psychtoolbox/PsychOpenGL/MOGL/source/')
     try
-    mex CFLAGS='$CFLAGS -fPIC -std=gnu99 -fexceptions -pthread' -outdir ./ -output moglcore -DLINUX -DGLEW_STATIC -largeArrayDims -DMEX_DOUBLE_HANDLE -I./ -I/usr/X11R6/include -L/usr/X11R6/lib -lc -lGL -lGLU -lglut moglcore.c gl_auto.c gl_manual.c glew.c mogl_rebinder.c ftglesGlue.c
+    mex CFLAGS='$CFLAGS -fPIC -std=gnu99 -fexceptions -pthread' -outdir ./ -output moglcore -DLINUX -DGLEW_STATIC -largeArrayDims -DMEX_DOUBLE_HANDLE -I./ -I/usr/include -lc -lGL -lGLU -lglut moglcore.c gl_auto.c gl_manual.c glew.c mogl_rebinder.c ftglesGlue.c
     catch %#ok<*CTCH>
     end
     unix(['mv moglcore.' mexext ' ' PsychtoolboxRoot 'PsychBasic/']);
@@ -121,7 +130,7 @@ if mode==12
 end
 
 if mode==14
-    % Build PsychOpenHMDVRCore.mex:
+    % Build PsychOpenHMDVRCore.mexa64:
     try
         mex CFLAGS='$CFLAGS -fPIC -std=gnu99 -fexceptions -pthread' -outdir ../Projects/Linux/build/ -output PsychOpenHMDVRCore -largeArrayDims -DMEX_DOUBLE_HANDLE -D_GNU_SOURCE -DPTBMODULE_PsychOpenHMDVRCore -L/usr/local/lib/ -I/usr/local/include -I/usr/local/include/openhmd -I/usr/include/openhmd -ICommon/Base -ILinux/Base -ICommon/PsychOpenHMDVRCore "Linux/Base/*.c" "Common/Base/*.c" "Common/PsychOpenHMDVRCore/*.c" -lc -lrt -ldl -lopenhmd
     catch
@@ -131,13 +140,24 @@ if mode==14
 end
 
 if mode==15
-    % Build PsychVulkanCore.mex:
+    % Build PsychVulkanCore.mexa64:
+    % Needs at least Vulkan SDK version 1.2.189
     try
         mex CFLAGS='$CFLAGS -fPIC -std=gnu99 -fexceptions -pthread' -outdir ../Projects/Linux/build/ -output PsychVulkanCore -largeArrayDims -DMEX_DOUBLE_HANDLE -DPTBMODULE_PsychVulkanCore -ICommon/Base -ILinux/Base -ICommon/PsychVulkanCore "Linux/Base/*.c" "Common/Base/*.c" "Common/PsychVulkanCore/*.c" -lc -lrt -ldl -lX11 -lvulkan
     catch
         disp(psychlasterror);
     end
     unix(['mv ../Projects/Linux/build/PsychVulkanCore.' mexext ' ' PsychtoolboxRoot 'PsychBasic/']);
+end
+
+if mode==16
+    % Build PsychOpenXRCore.mexa64:
+    try
+        mex CFLAGS='$CFLAGS -fPIC -std=gnu99 -fexceptions -pthread' -outdir ../Projects/Linux/build/ -output PsychOpenXRCore -largeArrayDims -DMEX_DOUBLE_HANDLE -D_GNU_SOURCE -DPTBMODULE_PsychOpenXRCore -ICommon/Base -ILinux/Base -ICommon/PsychOpenXRCore -ICommon/PsychOpenXRCore/nanopb "Linux/Base/*.c" "Common/Base/*.c" "Common/PsychOpenXRCore/*.c" "Common/PsychOpenXRCore/nanopb/*.c" -lc -lrt -ldl -lopenxr_loader
+    catch
+        disp(psychlasterror);
+    end
+    unix(['mv ../Projects/Linux/build/PsychOpenXRCore.' mexext ' ' PsychtoolboxRoot 'PsychBasic/']);
 end
 
 return;
