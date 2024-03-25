@@ -1,5 +1,5 @@
 %%%
-% GetMouseTransiantTouchscreenDemo
+% GetMouseTransientTouchscreenDemo
 %
 % Gilles Rautureau
 % gilles DOT rautureau AT icm-institute DOT org
