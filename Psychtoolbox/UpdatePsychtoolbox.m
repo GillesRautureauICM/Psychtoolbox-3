@@ -1,12 +1,29 @@
 function UpdatePsychtoolbox(targetdirectory, targetRevision, tryNonInteractiveSetup)
 % UpdatePsychtoolbox([targetdirectory][, targetRevision][, tryNonInteractiveSetup=0])
 %
+% THIS UPDATER DOES NO LONGER WORK, AS GITHUB HAS REMOVED THEIR
+% SUBVERSION FRONTEND, WHICH IT CRITICALLY REQUIRES, FROM THEIR SERVICES
+% PERMANENTLY AT 8TH JANUARY 2024.
+%
+% Due to the lack of financial support for Psychtoolbox by the vast
+% majority of our non-paying users, we did not and currently do not have
+% the funding to work on a good alternative solution for this. Therefore
+% this convenient installation and update method will be unavailable for an
+% unknown period of time.
+%
+% See http://psychtoolbox.org/download.html#alternate-download for a
+% workable, although way less convenient and advanced, download and
+% installation method, via zip file download and execution of
+% SetupPsychtoolbox(). Good luck!
+%
+% =========================================================================
+%
 % Update your working copy of the Psychtoolbox with the latest bug fixes,
 % enhancements, and features from our Git server.
 %
 % If you are using a Psychtoolbox provided by NeuroDebian, then this is not
 % needed. You will be automatically notified of updates to Psychtoolbox by
-% your operating systems update manager as soon as they become available.
+% your operating systems update manager, as soon as they become available.
 %
 % The "targetdirectory" argument is optional. If present, it specifies the path
 % of the Psychtoolbox folder to update. If omitted, UpdatePsychtoolbox will
@@ -26,8 +43,8 @@ function UpdatePsychtoolbox(targetdirectory, targetRevision, tryNonInteractiveSe
 % multiple times with the 'PREV' specifier, you could incrementally
 % downgrade until stuff works for you.
 %
-% UpdatePsychtoolbox cannot change the beta-vs-stable flavor of your
-% Psychtoolbox. To change the flavor, run DownloadPsychtoolbox again.
+% UpdatePsychtoolbox cannot change the flavor of your Psychtoolbox. To
+% change the flavor, run DownloadPsychtoolbox again.
 %
 % The optional parameter 'tryNonInteractiveSetup' if provided as 1 (true), will
 % try a setup without user interaction, not asking users for input in certain
@@ -77,6 +94,7 @@ function UpdatePsychtoolbox(targetdirectory, targetRevision, tryNonInteractiveSe
 %              modified files. Not super-friendly of us, but may cut down support
 %              overhead.
 % 10/28/20 mk  Add SVN support via Matlabs SVNKit.
+% 12/16/23 mk  Add warning about, and handling of GitHub SVN frontend shutdown at 8th January 2024.
 
 addpath(fullfile(fileparts(mfilename('fullpath')),'PsychOneliners'));
 
@@ -106,6 +124,22 @@ end
 if nargin < 3 || isempty(tryNonInteractiveSetup)
     tryNonInteractiveSetup = 0;
 end
+
+% It's the end of the world as we know it...
+fprintf('This Updater does no longer work, as GitHub has removed their Subversion frontend,\n');
+fprintf('which we critically require, from their services permanently at 8th January 2024.\n\n');
+fprintf('Due to the lack of financial support for Psychtoolbox by the vast majority of our non-paying users,\n');
+fprintf('we did not and currently do not have the funding to work on a good alternative solution for this.\n');
+fprintf('Therefore this convenient installation and update method will be unavailable for an unknown period\n');
+fprintf('of time.\n\n');
+fprintf('See http://psychtoolbox.org/download.html#alternate-download for a workable, although way less\n');
+fprintf('convenient and advanced, download and installation method, via zip file download and execution\n');
+fprintf('of SetupPsychtoolbox(). Good luck!\n\n\n');
+error('Updater aborted due to currently unsupported update method.');
+
+% After date check, leave here commented out as it may be useful in the future...
+%if datenum(date) > datenum('8-Jan-2024') %#ok<*DATE,*DATNM>
+%end
 
 oldpause = pause('query');
 if tryNonInteractiveSetup

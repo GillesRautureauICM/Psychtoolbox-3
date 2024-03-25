@@ -1,6 +1,23 @@
 function DownloadPsychtoolbox(targetdirectory, flavor, targetRevision, downloadmethod, tryNonInteractiveSetup)
 % DownloadPsychtoolbox([targetdirectory][, flavor][, targetRevision][, downloadmethod][, tryNonInteractiveSetup=0])
 %
+% THIS DOWNLOADER DOES NO LONGER WORK, AS GITHUB HAS REMOVED THEIR
+% SUBVERSION FRONTEND, WHICH IT CRITICALLY REQUIRES, FROM THEIR SERVICES
+% PERMANENTLY AT 8TH JANUARY 2024.
+%
+% Due to the lack of financial support for Psychtoolbox by the vast
+% majority of our non-paying users, we did not and currently do not have
+% the funding to work on a good alternative solution for this. Therefore
+% this convenient installation and update method will be unavailable for an
+% unknown period of time.
+%
+% See http://psychtoolbox.org/download.html#alternate-download for a
+% workable, although way less convenient and advanced, download and
+% installation method, via zip file download and execution of
+% SetupPsychtoolbox(). Good luck!
+%
+% =========================================================================
+%
 % This script downloads the latest GNU/Linux, MS-Windows, or Apple macOS
 % Psychtoolbox-3, version 3.0.10 or later, from our git-server to your
 % disk, creating your working copy, ready to use as a new toolbox in your
@@ -355,6 +372,7 @@ function DownloadPsychtoolbox(targetdirectory, flavor, targetRevision, downloadm
 %              on macOS, as provided by XCode command line tools.
 % 06/01/19 mk  Give automated hint about updated svn client under Matlab.
 % 10/27/20 mk  Add SVN support via Matlabs SVNKit.
+% 12/16/23 mk  Add warning about, and handling of GitHub SVN frontend shutdown at 8th January 2024.
 
 % Flush all MEX files: This is needed at least on M$-Windows for SVN to
 % work if Screen et al. are still loaded.
@@ -367,6 +385,22 @@ end
 if nargin < 5 || isempty(tryNonInteractiveSetup)
     tryNonInteractiveSetup = 0;
 end
+
+% It's the end of the world as we know it...
+fprintf('This Downloader does no longer work, as GitHub has removed their Subversion frontend,\n');
+fprintf('which we critically require, from their services permanently at 8th January 2024.\n\n');
+fprintf('Due to the lack of financial support for Psychtoolbox by the vast majority of our non-paying users,\n');
+fprintf('we did not and currently do not have the funding to work on a good alternative solution for this.\n');
+fprintf('Therefore this convenient installation and update method will be unavailable for an unknown period\n');
+fprintf('of time.\n\n');
+fprintf('See http://psychtoolbox.org/download.html#alternate-download for a workable, although way less\n');
+fprintf('convenient and advanced, download and installation method, via zip file download and execution\n');
+fprintf('of SetupPsychtoolbox(). Good luck!\n\n\n');
+error('Updater aborted due to currently unsupported update method.');
+
+% After date check, leave here commented out as it may be useful in the future...
+%if datenum(date) > datenum('8-Jan-2024') %#ok<*DATE,*DATNM>
+%end
 
 oldpause = pause('query');
 if tryNonInteractiveSetup

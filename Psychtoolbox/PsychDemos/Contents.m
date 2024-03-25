@@ -9,6 +9,7 @@
 %
 %    AlphaImageDemo          - Simple demo of OpenGL alpha blending.
 %    AlphaRotateDemo         - A variant of AlphaImageDemoOSX, demonstrates rotated drawing.
+%    ApriltagsDemo           - Demonstrate use of the apriltag library for fiducial April tag marker tracking.
 %    ArcDemo                 - Demonstrate the 'FrameArc', 'FillArc' functions.
 %    ARToolkitDemo           - Use ARToolkit to track and visualize 3D objects in live-video.
 %    AudioTunnel3DDemo       - Very sketchy demo on how to use OpenAL for 3D spatialized sound.
@@ -111,7 +112,7 @@
 %    RenderDemo              - Render CIE xyY as a color patch.
 %    SadowskiDemo            - Shows the "Sadowski" color afterimage effect.
 %    SimpleHDRDemo           - Minimal demo for using a HDR display, showing some basic stimuli.
-%    SimpleHDRLinuxStereoDemo -Like SimpleHDRDemo, but with Linux/X11 stereo hack for stereoscopic HDR stimulation.
+%    SimpleHDRLinuxStereoDemo - Like SimpleHDRDemo, but with Linux/X11 stereo hack for stereoscopic HDR stimulation.
 %    SimpleImageMixingDemo   - Shows how to mix two images via alpha-blending, using an alpha-mask which itself is morphed between two masks.
 %                              See also ImageMixingTutorial for a more complex demonstration of the technique.
 %    SimpleSoundScheduleDemo - Simple demo for basic use of sound schedules with PsychPortAudio.
