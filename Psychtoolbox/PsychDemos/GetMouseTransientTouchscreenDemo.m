@@ -55,9 +55,10 @@ yPosMin = round(windowRect(2)+sizeRect(2)/2,0);
 yPosMax = round(windowRect(2)+windowRect(4)-sizeRect(2)/2,0) ;
 
 
-
+iTrial = 0;
 exit = 0;
 while(exit == 0)
+    iTrial = iTrial + 1;
     
     %define position of rectangle
     xPos = randi([xPosMin xPosMax]);
@@ -84,6 +85,7 @@ while(exit == 0)
     
     % t0
     start = GetSecs( );
+    fprintf('trialStart %d\n', iTrial);
         
     touchResponseTime = realmax;
     mouseResponseTime = realmax;
@@ -99,7 +101,7 @@ while(exit == 0)
         if buttons(1) %check left mouse button.
             mouseResponseTime = timenow;
         end
-        if (~useStandard) && buttons(4) %check touch. 
+        if (~useStandard) && buttons(4)  && touchResponseTime == realmax %check touch. 
             touchResponseTime = timenow;
         end
         
@@ -153,7 +155,9 @@ while(exit == 0)
         rTstring = [sprintf('T: %dms\nM: %dms', touchResponseTime, mouseResponseTime)];
     end
     DrawFormattedText(windowPtr, rTstring, 'center', 'center', color, [], [], [], [], [], rect);
+    DrawFormattedText(windowPtr, 'Press any key to exit', 'center', 50, [255 255 255]);
     Screen('Flip', windowPtr);
+    fprintf([rTstring '\n']);
     
     %check keyboard to exit
     delay = 1.5 + (randi([0 10]))/10;
