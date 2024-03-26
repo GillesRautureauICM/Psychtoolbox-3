@@ -1,3 +1,19 @@
+This is a modified version of Psychtoolbox-3 which enable to capture transient mouse clic and touch for Windows 10+ OS only.
+
+Main difference from original is the function GetMouseTransiant (and some code in PsychWindowGlue.c)
+Usage is very similar to GetMouse.
+
+See help('GetMouseTransient') for details.
+
+See examples :
+Psychtoolbox\PsychDemos\GetMouseTransientDemo.m
+Psychtoolbox\PsychDemos\GetMouseTransientTouchscreenDemo.m
+
+For best touchscreen performance, disable Right-click emulation and gestures.
+If you don't how to do it, use provided batch script in touchscreenSetupForWindows10 folder with option 1 (or 2) and 4.
+
+
+==== original README filme ====
 This is the main Git repository for development of Psychtoolbox-3.
 
 It is meant for developers or alpha-testers only, not for regular
