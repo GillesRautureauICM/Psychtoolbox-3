@@ -3419,6 +3419,15 @@ int PsychGSPlaybackRate(int moviehandle, double playbackrate, int loop, double s
                         }
                     }
 
+                    if (g_object_class_find_property(G_OBJECT_GET_CLASS(actual_audiosink), "target-object")) {
+                        pstring = NULL;
+                        g_object_get(G_OBJECT(actual_audiosink), "target-object", &pstring, NULL);
+                        if (pstring) {
+                            printf("PTB-INFO: Audio output pipewire sink name/serial for movie playback was '%s'.", pstring);
+                            g_free(pstring); pstring = NULL;
+                        }
+                    }
+
                     printf("\n");
                     if (actual_audiosink != audiosink) gst_object_unref(actual_audiosink);
                 }
